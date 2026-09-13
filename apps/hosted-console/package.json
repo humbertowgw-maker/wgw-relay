@@ -1,0 +1,14 @@
+{
+  "name": "@wgw-relay/hosted-console",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "Apache-2.0",
+  "description": "Reference, single-tenant WGW Relay operator console."
+}

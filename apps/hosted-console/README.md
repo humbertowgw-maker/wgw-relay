@@ -1,15 +1,26 @@
 # Hosted Relay console
 
-This directory reserves the private, hosted application layer. It is not part
-of the initial open-source release.
+This is an Apache-2.0 reference operator console. It demonstrates the managed
+product flow without making self-hosting customers depend on a WGW service.
+A future WGW-managed deployment may add private account operations and tenant
+infrastructure around the same protocol.
 
-The hosted console will provide:
+## What works now
 
-- organization and subscription setup;
-- one-time device pairing;
-- employee extension and personal-alert preferences;
-- concierge knowledge and handoff controls;
-- monitored delivery, opt-out, and audit views.
+- a simple, high-contrast owner console with a separate onboarding path;
+- owner/employee extensions and explicit personal-alert preferences;
+- one-time phone-gateway pairing credentials (the stored value is hashed);
+- assignment, opt-out locking, queued replies, delivery state, and audit events;
+- gateway heartbeat, inbound-message, outbound-work, and result endpoints.
 
-It consumes `@wgw-relay/protocol` and `@wgw-relay/server`, but it must never
-require self-hosting customers to use the hosted service.
+Run it locally with Node 20+:
+
+```bash
+RELAY_ADMIN_TOKEN='a-long-random-secret' npm run start:console
+```
+
+It listens on `127.0.0.1:8787`. The current store is intentionally in-memory,
+so restarting clears the evaluation data. It is not a deployed managed service,
+nor is it ready to store customer data in production. Durable tenant storage,
+real account authentication, native gateway apps, notifications, and concierge
+controls are the next implementation layers.

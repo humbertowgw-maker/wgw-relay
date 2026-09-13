@@ -31,14 +31,15 @@ customer thread into the employee's personal SMS application.
 - `packages/server` — adapter contract for authenticating a paired device,
   accepting inbound messages, claiming outbound work, and recording delivery.
 - `connectors/wgw` — WGW ownership, handoff, and notification contract.
-- `apps/hosted-console` — the private hosted-console boundary and product plan.
+- `apps/hosted-console` — a runnable reference operator console for the managed flow.
 - `docs/PROTOCOL.md` — wire-level API contract.
 
 ## Status
 
-This first release is a tested protocol and server-adapter foundation. It does
-not yet ship a mobile gateway, hosted account console, carrier entitlement, or
-AI concierge. Those require device-specific implementation and live carrier
+This release has a tested relay protocol/server adapter plus a local runnable
+operator console. It does not yet ship a native mobile gateway, durable hosted
+tenant storage, a deployed account console, carrier entitlement, or AI
+concierge. Those require device-specific implementation and live carrier
 qualification before they are advertised as working.
 
 ## Development
@@ -50,6 +51,10 @@ protocol and adapter tests.
 npm test
 npm run check
 ```
+
+To evaluate the reference console locally, set a long random operator secret and
+run `RELAY_ADMIN_TOKEN='...' npm run start:console`. It binds to localhost and
+uses in-memory evaluation data; it is not a production deployment.
 
 ## Open source and hosted service
 

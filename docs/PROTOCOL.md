@@ -29,6 +29,10 @@ implementation and an envelope shaped like this:
 | `inbound.message` | gateway → server | Idempotently delivers an SMS received by the business SIM. |
 | `outbound.result` | gateway → server | Records sent, failed, or delivery status for a claimed message. |
 
+A heartbeat payload contains a `status` of `ready`, `degraded`, or `offline`.
+It may include `batteryPct` (0–100) for operator visibility. Gateways should
+send a heartbeat after pairing and periodically while they can receive work.
+
 The server returns a single outbound job through its authenticated polling
 endpoint. An outbound job includes a destination, body, internal owner, and
 idempotency key. It never includes a customer profile beyond what the gateway

@@ -56,6 +56,16 @@ export function validateEnvelope(input) {
     nonEmptyString(payload.body, "payload.body", errors, 1600);
   }
 
+  if (event === GatewayEvents.HEARTBEAT && isObject(payload)) {
+    const status = nonEmptyString(payload.status, "payload.status", errors, 32);
+    if (status && !["ready", "degraded", "offline"].includes(status)) {
+      errors.push("payload.status must be ready, degraded, or offline");
+    }
+    if (payload.batteryPct !== undefined && (!Number.isInteger(payload.batteryPct) || payload.batteryPct < 0 || payload.batteryPct > 100)) {
+      errors.push("payload.batteryPct must be an integer from 0 to 100 when provided");
+    }
+  }
+
   if (event === GatewayEvents.OUTBOUND_RESULT && isObject(payload)) {
     nonEmptyString(payload.jobId, "payload.jobId", errors, 128);
     const status = nonEmptyString(payload.status, "payload.status", errors, 32);

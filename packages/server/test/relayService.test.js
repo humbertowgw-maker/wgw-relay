@@ -11,9 +11,18 @@ const inbound = {
   payload: { messageId: "carrier-1", from: "+15551234567", to: "+15557654321", body: "I need help" },
 };
 
+const heartbeat = {
+  version: 1,
+  event: GatewayEvents.HEARTBEAT,
+  deviceId: "gateway_a",
+  sentAt: "2026-09-13T21:00:00.000Z",
+  payload: { status: "ready", batteryPct: 88 },
+};
+
 function service(overrides = {}) {
   return createRelayService({
     authenticateGateway: async ({ token, deviceId }) => token === "valid" && deviceId === "gateway_a" ? { id: deviceId, tenantId: "tenant_a" } : null,
+    recordHeartbeat: async () => {},
     recordInbound: async () => ({ conversationId: "conversation_1", duplicate: false }),
     claimOutbound: async () => null,
     recordOutboundResult: async () => {},
@@ -27,6 +36,15 @@ test("rejects an unpaired gateway before an inbound message reaches a connector"
   const result = await relay.receive({ token: "wrong", envelope: inbound });
   assert.equal(result.status, 401);
   assert.equal(recorded, false);
+});
+
+test("records a heartbeat only after gateway authentication", async () => {
+  let recorded = false;
+  const relay = service({ recordHeartbeat: async () => { recorded = true; } });
+  assert.equal((await relay.heartbeat({ token: "wrong", envelope: heartbeat })).status, 401);
+  assert.equal(recorded, false);
+  assert.deepEqual((await relay.heartbeat({ token: "valid", envelope: heartbeat })).body, { acknowledged: true });
+  assert.equal(recorded, true);
 });
 
 test("records an authenticated inbound message once through the adapter", async () => {

@@ -8,8 +8,9 @@
     "packages/*"
   ],
   "scripts": {
-    "test": "node --test packages/protocol/test/*.test.js packages/server/test/*.test.js",
-    "check": "node --check packages/protocol/src/index.js && node --check packages/server/src/relayService.js"
+    "test": "node --test packages/protocol/test/*.test.js packages/server/test/*.test.js apps/hosted-console/test/*.test.js",
+    "check": "node --check packages/protocol/src/index.js && node --check packages/server/src/relayService.js && node --check apps/hosted-console/src/store.js && node --check apps/hosted-console/src/app.js && node --check apps/hosted-console/src/server.js",
+    "start:console": "npm --prefix apps/hosted-console start"
   },
   "engines": {
     "node": ">=20"

@@ -30,3 +30,15 @@ test("rejects an inbound message without E.164 identities", () => {
 test("throws a useful error for unsupported events", () => {
   assert.throws(() => assertEnvelope({ ...inbound, event: "ai.reply" }), /event is not supported/);
 });
+
+test("validates gateway heartbeat readiness and optional battery percentage", () => {
+  const result = validateEnvelope({
+    version: 1,
+    event: GatewayEvents.HEARTBEAT,
+    deviceId: "gateway_a",
+    sentAt: "2026-09-13T21:00:00.000Z",
+    payload: { status: "ready", batteryPct: 101 },
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join(" "), /batteryPct/);
+});

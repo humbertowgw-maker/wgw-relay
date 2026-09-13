@@ -10,7 +10,7 @@ function response(status, body = null) {
  * inside the gateway application.
  */
 export function createRelayService(adapter) {
-  for (const name of ["authenticateGateway", "recordInbound", "claimOutbound", "recordOutboundResult"]) {
+  for (const name of ["authenticateGateway", "recordHeartbeat", "recordInbound", "claimOutbound", "recordOutboundResult"]) {
     if (typeof adapter?.[name] !== "function") throw new Error(`adapter.${name} is required`);
   }
 
@@ -19,6 +19,22 @@ export function createRelayService(adapter) {
   }
 
   return {
+    async heartbeat({ token, envelope }) {
+      const validated = validateEnvelope(envelope);
+      if (!validated.ok) return response(400, { error: "Invalid relay envelope", details: validated.errors });
+
+      const { value } = validated;
+      if (value.event !== GatewayEvents.HEARTBEAT) {
+        return response(400, { error: "Only gateway.heartbeat is accepted here" });
+      }
+
+      const gateway = await authenticate(token, value.deviceId);
+      if (!gateway) return response(401, { error: "Gateway authentication failed" });
+
+      await adapter.recordHeartbeat({ gateway, envelope: value });
+      return response(200, { acknowledged: true });
+    },
+
     async receive({ token, envelope }) {
       const validated = validateEnvelope(envelope);
       if (!validated.ok) return response(400, { error: "Invalid relay envelope", details: validated.errors });
