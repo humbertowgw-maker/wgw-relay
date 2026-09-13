@@ -99,6 +99,19 @@ function publicGateway(gateway) {
   };
 }
 
+function publicPhoneSetup(setup) {
+  return {
+    completedAt: setup?.completedAt || null,
+    businessPurpose: setup?.businessPurpose || null,
+    callsEnabled: Boolean(setup?.callsEnabled),
+    textsEnabled: Boolean(setup?.textsEnabled),
+    voicemailEnabled: Boolean(setup?.voicemailEnabled),
+    callForwardNumber: setup?.callForwardNumber || null,
+    notificationPhoneConfigured: Boolean(setup?.notificationPhoneConfigured),
+    connectionState: setup?.connectionState || "needs_setup",
+  };
+}
+
 function managesPeople(actor) { return actor.role === "owner" || actor.role === "manager"; }
 function managesGateway(actor) { return actor.role === "owner"; }
 function managesInbox(actor) { return actor.role === "owner" || actor.role === "manager"; }
@@ -201,7 +214,23 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
       const normalizedEmail = normalizeEmail(email);
       if (state.userByEmail.has(normalizedEmail)) throw fail("CONFLICT", "An account with that email already exists; sign in instead");
       const createdAt = now();
-      const tenant = { id: `tenant_${id()}`, organizationName: text(organizationName, "Organization name", 120), mainNumber: requiredPhone(mainNumber, "Business number"), createdAt };
+      const existingNumber = mainNumber ? requiredPhone(mainNumber, "Business number") : null;
+      const tenant = {
+        id: `tenant_${id()}`,
+        organizationName: text(organizationName, "Organization name", 120),
+        mainNumber: existingNumber,
+        phoneSetup: {
+          completedAt: existingNumber ? createdAt : null,
+          businessPurpose: existingNumber ? organizationName : null,
+          callsEnabled: Boolean(existingNumber),
+          textsEnabled: Boolean(existingNumber),
+          voicemailEnabled: Boolean(existingNumber),
+          callForwardNumber: null,
+          notificationPhoneConfigured: false,
+          connectionState: existingNumber ? "awaiting_gateway_or_pbx_connection" : "needs_setup",
+        },
+        createdAt,
+      };
       const credentials = passwordRecord(password(passwordInput));
       const alertPhone = optionalPhone(personalPhone, "Personal alert number");
       if (alertEnabled && !alertPhone) throw fail("VALIDATION", "A personal alert number is required when alerts are enabled");
@@ -237,6 +266,35 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
       if (current.membership.alertEnabled && !current.membership.alertPhone) throw fail("VALIDATION", "A personal alert number is required when alerts are enabled");
       event(current.tenantId, "profile.updated", { actorId: current.userId });
       return publicMember(current.user, current.membership);
+    },
+
+    configurePhoneSetup({ actor, businessNumber, businessPurpose, callsEnabled, textsEnabled, voicemailEnabled, callForwardNumber, notificationPhone }) {
+      const current = actorFor(actor);
+      if (current.role !== "owner") throw fail("FORBIDDEN", "Only the organization owner can configure the business number");
+      const calls = Boolean(callsEnabled);
+      const texts = Boolean(textsEnabled);
+      const voicemail = Boolean(voicemailEnabled);
+      if (!calls && !texts && !voicemail) throw fail("VALIDATION", "Choose at least one service for this number");
+      const forwardNumber = calls ? requiredPhone(callForwardNumber, "Call forwarding number") : null;
+      const alertPhone = optionalPhone(notificationPhone, "Notification number");
+      const tenant = tenantFor(current.tenantId);
+      tenant.mainNumber = requiredPhone(businessNumber, "Business number");
+      tenant.phoneSetup = {
+        completedAt: now(),
+        businessPurpose: businessPurpose ? text(businessPurpose, "Business purpose", 160) : tenant.organizationName,
+        callsEnabled: calls,
+        textsEnabled: texts,
+        voicemailEnabled: voicemail,
+        callForwardNumber: forwardNumber,
+        notificationPhoneConfigured: Boolean(alertPhone),
+        connectionState: "awaiting_gateway_or_pbx_connection",
+      };
+      if (alertPhone) {
+        current.membership.alertPhone = alertPhone;
+        current.membership.alertEnabled = true;
+      }
+      event(current.tenantId, "phone.setup_configured", { actorId: current.userId, calls, texts, voicemail });
+      return { mainNumber: tenant.mainNumber, phoneSetup: publicPhoneSetup(tenant.phoneSetup) };
     },
 
     createInvitation({ actor, name, email, role, extension }) {
@@ -276,6 +334,7 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
       const current = actorFor(actor);
       if (!managesGateway(current)) throw fail("FORBIDDEN", "Only the organization owner can pair a Relay phone");
       const tenant = tenantFor(current.tenantId);
+      if (!tenant.mainNumber || !tenant.phoneSetup?.completedAt) throw fail("VALIDATION", "Complete the business-number setup before pairing a Relay phone");
       const pairingToken = token();
       const gateway = { id: `gateway_${id()}`, tenantId: tenant.id, label: text(label, "Phone name", 120), phoneNumber: requiredPhone(phoneNumber || tenant.mainNumber, "Gateway number"), tokenHash: digest(pairingToken), state: "awaiting_first_heartbeat", createdAt: now(), lastHeartbeatAt: null, lastBatteryPct: null };
       state.gateways.set(gateway.id, gateway);
@@ -379,7 +438,7 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
       const members = [...state.memberships.values()].filter((item) => item.tenantId === current.tenantId && item.active).map((item) => publicMember(userFor(item.userId), item)).sort((a, b) => a.extension.localeCompare(b.extension));
       const conversations = [...state.conversations.values()].filter((item) => item.tenantId === current.tenantId && canAccessConversation(current, item)).map(publicConversation).sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
       return {
-        tenant: { ...tenant }, viewer: publicMember(current.user, current.membership),
+        tenant: { id: tenant.id, organizationName: tenant.organizationName, mainNumber: tenant.mainNumber, createdAt: tenant.createdAt, phoneSetup: publicPhoneSetup(tenant.phoneSetup) }, viewer: publicMember(current.user, current.membership),
         permissions: { managePeople: managesPeople(current), manageGateway: managesGateway(current), manageInbox: managesInbox(current) },
         members: managesPeople(current) ? members : [publicMember(current.user, current.membership)],
         gateways: managesGateway(current) ? [...state.gateways.values()].filter((item) => item.tenantId === current.tenantId).map(publicGateway) : [],

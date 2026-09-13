@@ -21,7 +21,7 @@ async function api(path, options = {}) {
 }
 
 function show(screen) {
-  ["auth", "dashboard"].forEach((id) => { $(`#${id}`).hidden = id !== screen; });
+  ["auth", "phone-onboarding", "dashboard"].forEach((id) => { $(`#${id}`).hidden = id !== screen; });
 }
 
 async function establishSession(result) {
@@ -66,7 +66,9 @@ function teamView() {
 function phoneView() {
   if (!state.permissions.manageGateway) return `<section class="card"><p class="eyebrow">RELAY PHONE</p><h2>Owner-controlled</h2><p class="muted">The organization owner pairs and monitors the dedicated business phone. Team members never need the pairing credential.</p></section>`;
   const phones = state.gateways.map((gateway) => `<li class="card row"><span><strong>${escapeHtml(gateway.label)}</strong><br><span class="muted">${escapeHtml(gateway.phoneNumber)} · last seen ${gateway.lastHeartbeatAt ? new Date(gateway.lastHeartbeatAt).toLocaleString() : "never"}</span></span><span class="pill ${statusClass(gateway.state)}">${escapeHtml(gateway.state.replaceAll("_", " "))}</span></li>`).join("");
-  return `<div class="split"><section><div class="section-head"><h2>Relay phones</h2><span class="muted">The real SIM remains the customer-visible number.</span></div>${phones ? `<ul class="list">${phones}</ul>` : `<div class="card empty">Pair the dedicated business phone when the native gateway is ready.</div>`}<div class="section-head"><h2>Recent activity</h2></div><ul class="audit">${state.audit.slice(0, 8).map((item) => `<li>${escapeHtml(new Date(item.at).toLocaleString())} · ${escapeHtml(item.action.replaceAll(".", " "))}</li>`).join("") || "<li>No activity yet.</li>"}</ul></section><section class="card"><p class="eyebrow">PAIR A PHONE</p><h2>Create a one-time gateway credential</h2><p class="muted">Give this only to the native app on the dedicated business phone. It is not an employee extension.</p><form id="gateway-form" class="stack"><label>Phone name<input name="label" placeholder="Front desk phone" required></label><label>SIM number<input name="phoneNumber" value="${escapeHtml(state.tenant.mainNumber)}" inputmode="tel" required></label><button type="submit">Create pairing credential</button></form><div id="pairing-result"></div></section></div>`;
+  const plan = state.tenant.phoneSetup;
+  const services = [[plan.callsEnabled, "Calls forward to", plan.callForwardNumber || "not configured"], [plan.textsEnabled, "Texts", "secure inbox"], [plan.voicemailEnabled, "Voicemail", "saved and alerted"]].filter(([enabled]) => enabled).map(([, label, value]) => `<li>${escapeHtml(label)}: <strong>${escapeHtml(value)}</strong></li>`).join("");
+  return `<div class="split"><section><div class="section-head"><h2>Relay phones</h2><span class="muted">The real SIM remains the customer-visible number.</span></div><div class="card"><p class="eyebrow">YOUR NUMBER PLAN</p><h3>${escapeHtml(state.tenant.mainNumber)}</h3><ul class="audit">${services}</ul><p class="muted">Saved and ready to connect to the Relay phone or PBX. Calls and voicemail do not activate until that connection is live.</p></div>${phones ? `<ul class="list">${phones}</ul>` : `<div class="card empty">Pair the dedicated business phone when the native gateway is ready.</div>`}<div class="section-head"><h2>Recent activity</h2></div><ul class="audit">${state.audit.slice(0, 8).map((item) => `<li>${escapeHtml(new Date(item.at).toLocaleString())} · ${escapeHtml(item.action.replaceAll(".", " "))}</li>`).join("") || "<li>No activity yet.</li>"}</ul></section><section class="card"><p class="eyebrow">PAIR A PHONE</p><h2>Create a one-time gateway credential</h2><p class="muted">Give this only to the native app on the dedicated business phone. It is not an employee extension.</p><form id="gateway-form" class="stack"><label>Phone name<input name="label" placeholder="Front desk phone" required></label><label>SIM number<input name="phoneNumber" value="${escapeHtml(state.tenant.mainNumber)}" inputmode="tel" required></label><button type="submit">Create pairing credential</button></form><div id="pairing-result"></div></section></div>`;
 }
 
 function profileView() {
@@ -76,6 +78,7 @@ function profileView() {
 
 function render() {
   if (!state) return show("auth");
+  if (!state.tenant.phoneSetup?.completedAt) return show("phone-onboarding");
   show("dashboard");
   $("#organization-name").textContent = state.tenant.organizationName;
   $("#business-number").textContent = `Customer-visible number: ${state.tenant.mainNumber}`;
@@ -92,6 +95,20 @@ async function handleAuth(event, endpoint) {
 $("#login-form").addEventListener("submit", (event) => handleAuth(event, "/api/login"));
 $("#register-form").addEventListener("submit", (event) => handleAuth(event, "/api/register"));
 $("#invite-form").addEventListener("submit", (event) => handleAuth(event, "/api/invitations/accept"));
+$("#phone-setup-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const body = {
+    businessNumber: form.get("businessNumber"),
+    businessPurpose: form.get("businessPurpose"),
+    callsEnabled: form.get("callsEnabled") === "on",
+    textsEnabled: form.get("textsEnabled") === "on",
+    voicemailEnabled: form.get("voicemailEnabled") === "on",
+    callForwardNumber: form.get("callForwardNumber"),
+    notificationPhone: form.get("notificationPhone"),
+  };
+  try { await api("/api/phone-setup", { method: "POST", body: JSON.stringify(body) }); await refresh(); setNotice("Your number plan is saved. Pair the Relay phone when it is ready."); } catch (error) { setNotice(error.message); }
+});
 
 document.addEventListener("click", async (event) => {
   const tab = event.target.closest("[data-view]");

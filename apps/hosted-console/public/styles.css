@@ -27,6 +27,10 @@ textarea { min-height: 5.5rem; resize: vertical; }
 label { display: block; font-weight: 700; }
 details { color: var(--muted); border-left: 2px solid var(--edge); padding-left: .8rem; }
 details label { margin-top: .8rem; color: var(--ink); }
+fieldset.service-options { display: grid; gap: .65rem; margin: 0; padding: 1rem; border: 1px solid var(--edge); border-radius: .65rem; }
+fieldset.service-options legend { padding: 0 .35rem; color: var(--muted); font-size: .85rem; font-weight: 800; }
+fieldset.service-options label { display: flex; align-items: center; gap: .55rem; font-weight: 650; }
+fieldset.service-options input { width: auto; margin: 0; }
 .shell { width: min(1180px, calc(100% - 2rem)); margin: 0 auto; padding-bottom: 3rem; }
 .topbar { min-height: 4.5rem; display: flex; justify-content: space-between; align-items: center; font-size: 1.05rem; font-weight: 800; }
 .mark { display: inline-grid; place-items: center; width: 1.8rem; height: 1.8rem; margin-right: .5rem; border-radius: .45rem; color: var(--accent-ink); background: var(--accent); }

@@ -67,3 +67,24 @@ test("lets every user control their own notification preference without exposing
   assert.equal(viewer.alertPhoneConfigured, true);
   assert.equal(JSON.stringify(viewer).includes("+15551234567"), false);
 });
+
+test("turns a plain-language number plan into tenant-scoped call, text, and voicemail settings", () => {
+  const store = fixture();
+  const owner = register(store, "Owner", "owner@example.com");
+  const actor = store.authenticateUser(owner.sessionToken);
+  assert.equal(store.snapshot({ actor }).tenant.phoneSetup.completedAt, null);
+  assert.throws(() => store.pairGateway({ actor, label: "Desk phone" }), /Complete the business-number setup/);
+  const configured = store.configurePhoneSetup({
+    actor,
+    businessNumber: "+15557654321",
+    businessPurpose: "Sales and support",
+    callsEnabled: true,
+    textsEnabled: true,
+    voicemailEnabled: true,
+    callForwardNumber: "+15551234567",
+    notificationPhone: "+15551234567",
+  });
+  assert.equal(configured.phoneSetup.callsEnabled, true);
+  assert.equal(configured.phoneSetup.callForwardNumber, "+15551234567");
+  assert.equal(configured.phoneSetup.connectionState, "awaiting_gateway_or_pbx_connection");
+});

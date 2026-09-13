@@ -8,6 +8,8 @@ infrastructure around the same protocol.
 ## What works now
 
 - self-service organization registration and normal email/password sign-in;
+- a plain-language number plan: business purpose, calls, texts, voicemail,
+  call-forward destination, and owner alerts;
 - owner, manager, and agent roles with tenant-isolated inbox visibility;
 - expiring, one-use teammate invitations and individual alert preferences;
 - one-time phone-gateway pairing credentials (the stored value is hashed);
@@ -25,3 +27,5 @@ so restarting clears the evaluation data. It is not a deployed managed service,
 nor is it ready to store customer data in production. Durable tenant storage,
 email verification and recovery, MFA, rate limiting, native gateway apps,
 notifications, and concierge controls are the next implementation layers.
+Saving a number plan does not activate carrier calls or voicemail by itself;
+that requires a paired Relay phone or PBX connection.

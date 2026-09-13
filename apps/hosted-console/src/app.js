@@ -142,6 +142,7 @@ export function createHostedConsole({ store = createHostedRelayStore() } = {}) {
         }
         if (req.method === "GET" && pathname === "/api/state") return send(res, 200, store.snapshot({ actor: authenticated.actor }));
         if (req.method === "POST" && pathname === "/api/profile") return send(res, 200, store.updateProfile({ actor: authenticated.actor, ...(await jsonBody(req)) }));
+        if (req.method === "POST" && pathname === "/api/phone-setup") return send(res, 200, store.configurePhoneSetup({ actor: authenticated.actor, ...(await jsonBody(req)) }));
         if (req.method === "POST" && pathname === "/api/invitations") return send(res, 201, store.createInvitation({ actor: authenticated.actor, ...(await jsonBody(req)) }));
         if (req.method === "POST" && pathname === "/api/gateways") return send(res, 201, store.pairGateway({ actor: authenticated.actor, ...(await jsonBody(req)) }));
 

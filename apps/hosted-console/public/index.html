@@ -28,10 +28,9 @@
         <div class="center-card compact">
           <p class="eyebrow">NEW ORGANIZATION</p>
           <h1>Start your Relay</h1>
-          <p>One business number. Your team receives only the conversations assigned to them.</p>
+          <p>Create your account first. The next screen connects the business number in plain English.</p>
           <form id="register-form" class="stack">
             <label>Business name<input name="organizationName" placeholder="White Glove Wireless" maxlength="120" required></label>
-            <label>Business texting number<input name="mainNumber" inputmode="tel" placeholder="+15551234567" required></label>
             <label>Your name<input name="name" autocomplete="name" maxlength="120" required></label>
             <label>Your email<input name="email" type="email" autocomplete="email" required></label>
             <label>Create a password<input name="password" type="password" minlength="12" autocomplete="new-password" required></label>
@@ -45,6 +44,24 @@
             </form>
           </details>
         </div>
+      </section>
+
+      <section id="phone-onboarding" class="center-card" hidden>
+        <p class="eyebrow">CONNECT YOUR BUSINESS NUMBER</p>
+        <h1>Tell us what you want this number to do.</h1>
+        <p>We will save the plan for your Relay phone and phone system. You can change it later.</p>
+        <form id="phone-setup-form" class="stack">
+          <label>Use this number for my business<input name="businessNumber" inputmode="tel" placeholder="+15551234567" required></label>
+          <label>What is this number for?<input name="businessPurpose" placeholder="Sales and customer support" maxlength="160"></label>
+          <fieldset class="service-options"><legend>Turn on</legend>
+            <label><input name="callsEnabled" type="checkbox" checked> Calls — forward to my chosen phone</label>
+            <label><input name="textsEnabled" type="checkbox" checked> Texts — receive and reply in the secure inbox</label>
+            <label><input name="voicemailEnabled" type="checkbox" checked> Voicemail — save a message and notify me</label>
+          </fieldset>
+          <label>Forward incoming calls to<input name="callForwardNumber" inputmode="tel" placeholder="+15551234567"></label>
+          <label>Send important text and voicemail alerts to<input name="notificationPhone" inputmode="tel" placeholder="+15551234567"></label>
+          <button type="submit">Save my number plan</button>
+        </form>
       </section>
 
       <section id="dashboard" hidden>

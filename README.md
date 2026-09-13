@@ -39,10 +39,12 @@ customer thread into the employee's personal SMS application.
 This release has a tested relay protocol/server adapter plus a local runnable
 multi-tenant reference console. It includes tenant-scoped user sessions,
 owner/manager/agent permissions, invitations, profile alert preferences, and
-private assigned inboxes. It does not yet ship a native mobile gateway, durable
-hosted tenant storage, a deployed account console, carrier entitlement, or AI
-concierge. Those require device-specific implementation and live carrier
-qualification before they are advertised as working.
+private assigned inboxes. The setup flow also records a number plan for calls,
+texts, voicemail, call forwarding, and alerts. It does not yet ship a native
+mobile gateway, durable hosted tenant storage, a deployed account console,
+carrier entitlement, or AI concierge. Those require device-specific
+implementation and live carrier qualification before they are advertised as
+working.
 
 ## Development
 

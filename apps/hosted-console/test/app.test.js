@@ -24,10 +24,13 @@ test("runs a signed-in tenant user flow with invitation permissions and paired-d
   const { server, baseUrl } = await runningServer();
   t.after(() => server.close());
 
-  const owner = await request(baseUrl, "/api/register", { method: "POST", body: { organizationName: "WGW", mainNumber: "+15557654321", name: "Owner", email: "owner@example.com", password: "owner-long-password" } });
+  const owner = await request(baseUrl, "/api/register", { method: "POST", body: { organizationName: "WGW", name: "Owner", email: "owner@example.com", password: "owner-long-password" } });
   assert.equal(owner.response.status, 201);
   const ownerHeaders = { authorization: `Bearer ${owner.body.sessionToken}` };
   assert.equal((await request(baseUrl, "/api/state")).response.status, 401);
+  assert.equal((await request(baseUrl, "/api/gateways", { method: "POST", headers: ownerHeaders, body: { label: "Too early" } })).response.status, 422);
+  const phoneSetup = await request(baseUrl, "/api/phone-setup", { method: "POST", headers: ownerHeaders, body: { businessNumber: "+15557654321", businessPurpose: "Sales", callsEnabled: true, textsEnabled: true, voicemailEnabled: true, callForwardNumber: "+15551234567", notificationPhone: "+15551234567" } });
+  assert.equal(phoneSetup.response.status, 200);
 
   const invited = await request(baseUrl, "/api/invitations", { method: "POST", headers: ownerHeaders, body: { name: "Alex", email: "alex@example.com", role: "agent", extension: "101" } });
   assert.equal(invited.response.status, 201);
