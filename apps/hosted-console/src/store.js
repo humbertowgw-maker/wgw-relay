@@ -1,7 +1,11 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 
 const E164 = /^\+[1-9]\d{7,14}$/;
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const EXTENSION = /^[A-Za-z0-9_-]{1,16}$/;
+const INVITABLE_ROLES = new Set(["manager", "agent"]);
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function fail(code, message) {
   const error = new Error(message);
@@ -14,6 +18,12 @@ function text(value, field, maxLength = 1600) {
   const trimmed = value.trim();
   if (trimmed.length > maxLength) throw fail("VALIDATION", `${field} is too long`);
   return trimmed;
+}
+
+function normalizeEmail(value) {
+  const email = text(value, "Email address", 254).toLowerCase();
+  if (!EMAIL.test(email)) throw fail("VALIDATION", "Email address is not valid");
+  return email;
 }
 
 function optionalPhone(value, field) {
@@ -29,25 +39,51 @@ function requiredPhone(value, field) {
   return phone;
 }
 
+function password(value) {
+  const candidate = text(value, "Password", 256);
+  if (candidate.length < 12) throw fail("VALIDATION", "Password must be at least 12 characters");
+  return candidate;
+}
+
 function digest(secret) {
   return createHash("sha256").update(secret).digest();
 }
 
-function sameSecret(expectedHash, token) {
-  if (typeof token !== "string" || !token) return false;
-  const actualHash = digest(token);
-  return expectedHash.length === actualHash.length && timingSafeEqual(expectedHash, actualHash);
+function hashKey(secret) {
+  return digest(secret).toString("base64url");
 }
 
-function publicEmployee(employee) {
+function sameSecret(expectedHash, secret) {
+  if (!expectedHash || typeof secret !== "string" || !secret) return false;
+  const actual = digest(secret);
+  return expectedHash.length === actual.length && timingSafeEqual(expectedHash, actual);
+}
+
+function passwordRecord(candidate) {
+  const salt = randomBytes(16);
+  return { salt: salt.toString("base64url"), hash: scryptSync(candidate, salt, 32) };
+}
+
+function matchesPassword(record, candidate) {
+  if (typeof candidate !== "string") return false;
+  const actual = scryptSync(candidate, Buffer.from(record.salt, "base64url"), 32);
+  return actual.length === record.hash.length && timingSafeEqual(actual, record.hash);
+}
+
+function membershipKey(tenantId, userId) {
+  return `${tenantId}:${userId}`;
+}
+
+function publicMember(user, membership) {
   return {
-    id: employee.id,
-    name: employee.name,
-    extension: employee.extension,
-    role: employee.role,
-    alertPhoneConfigured: Boolean(employee.alertPhone),
-    alertEnabled: employee.alertEnabled,
-    createdAt: employee.createdAt,
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: membership.role,
+    extension: membership.extension,
+    alertPhoneConfigured: Boolean(membership.alertPhone),
+    alertEnabled: membership.alertEnabled,
+    createdAt: membership.createdAt,
   };
 }
 
@@ -63,126 +99,188 @@ function publicGateway(gateway) {
   };
 }
 
-function publicConversation(conversation, employees) {
-  const owner = conversation.ownerId ? employees.get(conversation.ownerId) : null;
-  return {
-    id: conversation.id,
-    customerPhone: conversation.customerPhone,
-    businessPhone: conversation.businessPhone,
-    ownerId: conversation.ownerId,
-    ownerName: owner?.name || null,
-    ownerExtension: owner?.extension || null,
-    state: conversation.state,
-    optedOut: conversation.optedOut,
-    createdAt: conversation.createdAt,
-    lastActivityAt: conversation.lastActivityAt,
-    messages: conversation.messages.map((message) => ({ ...message })),
-  };
-}
+function managesPeople(actor) { return actor.role === "owner" || actor.role === "manager"; }
+function managesGateway(actor) { return actor.role === "owner"; }
+function managesInbox(actor) { return actor.role === "owner" || actor.role === "manager"; }
 
 /**
- * A deliberately small in-memory store for one managed tenant. It is suitable
- * for local evaluation and the UI contract; production hosting must replace it
- * with a transactional tenant-aware datastore.
+ * Reference multi-tenant store. Each tenant-sensitive operation accepts an
+ * authenticated actor. Passwords, sessions, invitation codes, and pairing
+ * tokens are hashed and never returned after their one issuance response.
  */
-export function createHostedRelayStore({ now = () => new Date().toISOString(), id = randomUUID, token = () => randomBytes(32).toString("base64url") } = {}) {
+export function createHostedRelayStore({ now = () => new Date().toISOString(), nowMs = () => Date.now(), id = randomUUID, token = () => randomBytes(32).toString("base64url") } = {}) {
   const state = {
-    tenant: null,
-    employees: new Map(),
-    gateways: new Map(),
-    conversations: new Map(),
-    inboundIds: new Map(),
-    outboundJobs: new Map(),
-    audit: [],
+    tenants: new Map(), users: new Map(), userByEmail: new Map(), memberships: new Map(), sessions: new Map(), invitations: new Map(),
+    gateways: new Map(), conversations: new Map(), inboundIds: new Map(), outboundJobs: new Map(), auditByTenant: new Map(),
   };
 
-  function event(action, details = {}) {
-    state.audit.unshift({ id: `audit_${id()}`, at: now(), action, ...details });
-    state.audit.splice(40);
+  function event(tenantId, action, details = {}) {
+    const audit = state.auditByTenant.get(tenantId) || [];
+    audit.unshift({ id: `audit_${id()}`, at: now(), action, ...details });
+    audit.splice(40);
+    state.auditByTenant.set(tenantId, audit);
   }
 
-  function tenant() {
-    if (!state.tenant) throw fail("NOT_CONFIGURED", "Complete onboarding first");
-    return state.tenant;
+  function tenantFor(tenantId) {
+    const tenant = state.tenants.get(tenantId);
+    if (!tenant) throw fail("NOT_FOUND", "Organization was not found");
+    return tenant;
   }
 
-  function employeeFor(idValue) {
-    const employee = state.employees.get(idValue);
-    if (!employee) throw fail("NOT_FOUND", "Employee was not found");
-    return employee;
+  function userFor(userId) {
+    const user = state.users.get(userId);
+    if (!user) throw fail("NOT_FOUND", "User was not found");
+    return user;
   }
 
-  function conversationFor(idValue) {
-    const conversation = state.conversations.get(idValue);
-    if (!conversation) throw fail("NOT_FOUND", "Conversation was not found");
+  function membershipFor(tenantId, userId) {
+    const membership = state.memberships.get(membershipKey(tenantId, userId));
+    if (!membership?.active) throw fail("FORBIDDEN", "You do not have access to this organization");
+    return membership;
+  }
+
+  function sessionActor(sessionToken) {
+    const key = hashKey(sessionToken);
+    const session = state.sessions.get(key);
+    if (!session || session.expiresAtMs <= nowMs()) {
+      if (session) state.sessions.delete(key);
+      throw fail("UNAUTHENTICATED", "Sign in to continue");
+    }
+    const user = userFor(session.userId);
+    const membership = membershipFor(session.tenantId, session.userId);
+    return { tenantId: session.tenantId, userId: session.userId, role: membership.role, user, membership, sessionId: session.id };
+  }
+
+  function actorFor(actor) {
+    if (!actor?.tenantId || !actor?.userId) throw fail("UNAUTHENTICATED", "Sign in to continue");
+    const user = userFor(actor.userId);
+    const membership = membershipFor(actor.tenantId, actor.userId);
+    return { ...actor, role: membership.role, user, membership };
+  }
+
+  function issueSession(tenantId, userId) {
+    const sessionToken = token();
+    const session = { id: `session_${id()}`, tenantId, userId, createdAt: now(), expiresAtMs: nowMs() + SESSION_TTL_MS };
+    state.sessions.set(hashKey(sessionToken), session);
+    return { sessionToken, expiresAt: new Date(session.expiresAtMs).toISOString() };
+  }
+
+  function uniqueExtension(tenantId, extension) {
+    const normalized = text(extension, "Extension", 16);
+    if (!EXTENSION.test(normalized)) throw fail("VALIDATION", "Extension may use letters, numbers, hyphens, and underscores only");
+    if ([...state.memberships.values()].some((item) => item.tenantId === tenantId && item.extension === normalized && item.active)) throw fail("CONFLICT", "That extension is already in use");
+    if ([...state.invitations.values()].some((item) => item.tenantId === tenantId && item.extension === normalized && !item.usedAt && item.expiresAtMs > nowMs())) throw fail("CONFLICT", "That extension is reserved by an active invitation");
+    return normalized;
+  }
+
+  function conversationFor(actor, conversationId) {
+    const conversation = state.conversations.get(conversationId);
+    if (!conversation || conversation.tenantId !== actor.tenantId) throw fail("NOT_FOUND", "Conversation was not found");
     return conversation;
   }
 
+  function canAccessConversation(actor, conversation) {
+    return managesInbox(actor) || conversation.ownerId === actor.userId;
+  }
+
+  function publicConversation(conversation) {
+    const owner = conversation.ownerId ? state.users.get(conversation.ownerId) : null;
+    const ownerMembership = owner ? state.memberships.get(membershipKey(conversation.tenantId, owner.id)) : null;
+    return {
+      id: conversation.id, customerPhone: conversation.customerPhone, businessPhone: conversation.businessPhone,
+      ownerId: conversation.ownerId, ownerName: owner?.name || null, ownerExtension: ownerMembership?.extension || null,
+      state: conversation.state, optedOut: conversation.optedOut, createdAt: conversation.createdAt, lastActivityAt: conversation.lastActivityAt,
+      messages: conversation.messages.map((message) => ({ ...message })),
+    };
+  }
+
   return {
-    setup({ organizationName, mainNumber, ownerName, ownerAlertPhone }) {
-      if (state.tenant) throw fail("CONFLICT", "This relay already has an organization");
+    status() { return { registrationOpen: true }; },
+
+    registerTenant({ organizationName, mainNumber, name, email, password: passwordInput, personalPhone, alertEnabled = false }) {
+      const normalizedEmail = normalizeEmail(email);
+      if (state.userByEmail.has(normalizedEmail)) throw fail("CONFLICT", "An account with that email already exists; sign in instead");
       const createdAt = now();
-      state.tenant = {
-        id: `tenant_${id()}`,
-        organizationName: text(organizationName, "Organization name", 120),
-        mainNumber: requiredPhone(mainNumber, "Business number"),
-        createdAt,
-      };
-      const owner = {
-        id: `employee_${id()}`,
-        name: text(ownerName, "Owner name", 120),
-        extension: "100",
-        role: "owner",
-        alertPhone: optionalPhone(ownerAlertPhone, "Owner alert number"),
-        alertEnabled: Boolean(ownerAlertPhone),
-        createdAt,
-      };
-      state.employees.set(owner.id, owner);
-      event("tenant.onboarded", { tenantId: state.tenant.id, employeeId: owner.id });
-      return { tenant: { ...state.tenant }, owner: publicEmployee(owner) };
+      const tenant = { id: `tenant_${id()}`, organizationName: text(organizationName, "Organization name", 120), mainNumber: requiredPhone(mainNumber, "Business number"), createdAt };
+      const credentials = passwordRecord(password(passwordInput));
+      const alertPhone = optionalPhone(personalPhone, "Personal alert number");
+      if (alertEnabled && !alertPhone) throw fail("VALIDATION", "A personal alert number is required when alerts are enabled");
+      const user = { id: `user_${id()}`, name: text(name, "Your name", 120), email: normalizedEmail, passwordSalt: credentials.salt, passwordHash: credentials.hash, createdAt };
+      const membership = { tenantId: tenant.id, userId: user.id, role: "owner", extension: "100", alertPhone, alertEnabled: Boolean(alertEnabled), active: true, createdAt };
+      state.tenants.set(tenant.id, tenant);
+      state.users.set(user.id, user);
+      state.userByEmail.set(user.email, user.id);
+      state.memberships.set(membershipKey(tenant.id, user.id), membership);
+      event(tenant.id, "tenant.registered", { actorId: user.id });
+      return { ...issueSession(tenant.id, user.id), tenant: { ...tenant }, viewer: publicMember(user, membership) };
     },
 
-    addEmployee({ name, extension, alertPhone, alertEnabled = false }) {
-      const activeTenant = tenant();
-      const normalizedExtension = text(extension, "Extension", 16);
-      if (!EXTENSION.test(normalizedExtension)) throw fail("VALIDATION", "Extension may use letters, numbers, hyphens, and underscores only");
-      if ([...state.employees.values()].some((employee) => employee.extension === normalizedExtension)) {
-        throw fail("CONFLICT", "That extension is already in use");
-      }
-      const configuredPhone = optionalPhone(alertPhone, "Alert number");
-      if (alertEnabled && !configuredPhone) throw fail("VALIDATION", "An alert number is required when alerts are enabled");
-      const employee = {
-        id: `employee_${id()}`,
-        tenantId: activeTenant.id,
-        name: text(name, "Employee name", 120),
-        extension: normalizedExtension,
-        role: "employee",
-        alertPhone: configuredPhone,
-        alertEnabled: Boolean(alertEnabled),
-        createdAt: now(),
-      };
-      state.employees.set(employee.id, employee);
-      event("employee.added", { employeeId: employee.id, extension: employee.extension });
-      return publicEmployee(employee);
+    signIn({ email, password: passwordInput }) {
+      const userId = state.userByEmail.get(normalizeEmail(email));
+      const user = userId ? state.users.get(userId) : null;
+      if (!user || !matchesPassword({ salt: user.passwordSalt, hash: user.passwordHash }, passwordInput)) throw fail("UNAUTHENTICATED", "Email or password was not accepted");
+      const memberships = [...state.memberships.values()].filter((item) => item.userId === user.id && item.active);
+      if (memberships.length !== 1) throw fail("CONFLICT", "This reference console requires choosing an organization before sign-in");
+      const membership = memberships[0];
+      event(membership.tenantId, "user.signed_in", { actorId: user.id });
+      return { ...issueSession(membership.tenantId, user.id), tenant: { ...tenantFor(membership.tenantId) }, viewer: publicMember(user, membership) };
     },
 
-    pairGateway({ label, phoneNumber }) {
-      const activeTenant = tenant();
-      const rawToken = token();
-      const gateway = {
-        id: `gateway_${id()}`,
-        tenantId: activeTenant.id,
-        label: text(label, "Phone name", 120),
-        phoneNumber: requiredPhone(phoneNumber || activeTenant.mainNumber, "Gateway number"),
-        tokenHash: digest(rawToken),
-        state: "awaiting_first_heartbeat",
-        createdAt: now(),
-        lastHeartbeatAt: null,
-        lastBatteryPct: null,
+    signOut(sessionToken) { state.sessions.delete(hashKey(sessionToken)); },
+    authenticateUser(sessionToken) { return sessionActor(sessionToken); },
+
+    updateProfile({ actor, name, personalPhone, alertEnabled }) {
+      const current = actorFor(actor);
+      if (name !== undefined) current.user.name = text(name, "Your name", 120);
+      if (personalPhone !== undefined) current.membership.alertPhone = optionalPhone(personalPhone, "Personal alert number");
+      if (alertEnabled !== undefined) current.membership.alertEnabled = Boolean(alertEnabled);
+      if (current.membership.alertEnabled && !current.membership.alertPhone) throw fail("VALIDATION", "A personal alert number is required when alerts are enabled");
+      event(current.tenantId, "profile.updated", { actorId: current.userId });
+      return publicMember(current.user, current.membership);
+    },
+
+    createInvitation({ actor, name, email, role, extension }) {
+      const current = actorFor(actor);
+      if (!managesPeople(current)) throw fail("FORBIDDEN", "Only an owner or manager can invite teammates");
+      if (!INVITABLE_ROLES.has(role)) throw fail("VALIDATION", "Invite role must be manager or agent");
+      const normalizedEmail = normalizeEmail(email);
+      if (state.userByEmail.has(normalizedEmail)) throw fail("CONFLICT", "That email already has an account in this reference console");
+      const inviteCode = token();
+      const invitation = {
+        id: `invite_${id()}`, tenantId: current.tenantId, name: text(name, "Teammate name", 120), email: normalizedEmail, role,
+        extension: uniqueExtension(current.tenantId, extension), codeHash: digest(inviteCode), createdAt: now(), expiresAtMs: nowMs() + INVITE_TTL_MS, usedAt: null,
       };
+      state.invitations.set(invitation.id, invitation);
+      event(current.tenantId, "member.invited", { actorId: current.userId, invitationId: invitation.id, role });
+      return { invitation: { id: invitation.id, name: invitation.name, email: invitation.email, role: invitation.role, extension: invitation.extension, expiresAt: new Date(invitation.expiresAtMs).toISOString() }, inviteCode };
+    },
+
+    acceptInvitation({ inviteCode, password: passwordInput, personalPhone, alertEnabled = false }) {
+      const invitation = [...state.invitations.values()].find((item) => sameSecret(item.codeHash, inviteCode));
+      if (!invitation || invitation.usedAt || invitation.expiresAtMs <= nowMs()) throw fail("UNAUTHENTICATED", "Invitation is invalid, expired, or already used");
+      if (state.userByEmail.has(invitation.email)) throw fail("CONFLICT", "That email already has an account; ask the owner to resend the invitation");
+      const credentials = passwordRecord(password(passwordInput));
+      const alertPhone = optionalPhone(personalPhone, "Personal alert number");
+      if (alertEnabled && !alertPhone) throw fail("VALIDATION", "A personal alert number is required when alerts are enabled");
+      const user = { id: `user_${id()}`, name: invitation.name, email: invitation.email, passwordSalt: credentials.salt, passwordHash: credentials.hash, createdAt: now() };
+      const membership = { tenantId: invitation.tenantId, userId: user.id, role: invitation.role, extension: invitation.extension, alertPhone, alertEnabled: Boolean(alertEnabled), active: true, createdAt: now() };
+      invitation.usedAt = now();
+      state.users.set(user.id, user);
+      state.userByEmail.set(user.email, user.id);
+      state.memberships.set(membershipKey(membership.tenantId, user.id), membership);
+      event(membership.tenantId, "invitation.accepted", { userId: user.id, invitationId: invitation.id });
+      return { ...issueSession(membership.tenantId, user.id), tenant: { ...tenantFor(membership.tenantId) }, viewer: publicMember(user, membership) };
+    },
+
+    pairGateway({ actor, label, phoneNumber }) {
+      const current = actorFor(actor);
+      if (!managesGateway(current)) throw fail("FORBIDDEN", "Only the organization owner can pair a Relay phone");
+      const tenant = tenantFor(current.tenantId);
+      const pairingToken = token();
+      const gateway = { id: `gateway_${id()}`, tenantId: tenant.id, label: text(label, "Phone name", 120), phoneNumber: requiredPhone(phoneNumber || tenant.mainNumber, "Gateway number"), tokenHash: digest(pairingToken), state: "awaiting_first_heartbeat", createdAt: now(), lastHeartbeatAt: null, lastBatteryPct: null };
       state.gateways.set(gateway.id, gateway);
-      event("gateway.paired", { gatewayId: gateway.id });
-      return { gateway: publicGateway(gateway), pairingToken: rawToken };
+      event(tenant.id, "gateway.paired", { actorId: current.userId, gatewayId: gateway.id });
+      return { gateway: publicGateway(gateway), pairingToken };
     },
 
     authenticateGateway({ token: gatewayToken, deviceId }) {
@@ -192,50 +290,28 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), i
     },
 
     recordHeartbeat({ gateway, envelope }) {
-      const storedGateway = state.gateways.get(gateway.id);
-      if (!storedGateway) throw fail("NOT_FOUND", "Gateway was not found");
-      storedGateway.state = envelope.payload.status;
-      storedGateway.lastHeartbeatAt = now();
-      storedGateway.lastBatteryPct = envelope.payload.batteryPct ?? null;
-      event("gateway.heartbeat", { gatewayId: gateway.id, state: storedGateway.state });
+      const stored = state.gateways.get(gateway.id);
+      if (!stored) throw fail("NOT_FOUND", "Gateway was not found");
+      stored.state = envelope.payload.status;
+      stored.lastHeartbeatAt = now();
+      stored.lastBatteryPct = envelope.payload.batteryPct ?? null;
+      event(gateway.tenantId, "gateway.heartbeat", { gatewayId: gateway.id, state: stored.state });
     },
 
     recordInbound({ gateway, envelope }) {
       const duplicateKey = `${gateway.id}:${envelope.payload.messageId}`;
       const existing = state.inboundIds.get(duplicateKey);
       if (existing) return { conversationId: existing, duplicate: true };
-
       const payload = envelope.payload;
-      let conversation = [...state.conversations.values()].find((item) =>
-        item.tenantId === gateway.tenantId && item.customerPhone === payload.from && item.businessPhone === payload.to,
-      );
+      let conversation = [...state.conversations.values()].find((item) => item.tenantId === gateway.tenantId && item.customerPhone === payload.from && item.businessPhone === payload.to);
       if (!conversation) {
-        conversation = {
-          id: `conversation_${id()}`,
-          tenantId: gateway.tenantId,
-          gatewayId: gateway.id,
-          customerPhone: payload.from,
-          businessPhone: payload.to,
-          ownerId: null,
-          state: "needs_assignment",
-          optedOut: false,
-          createdAt: now(),
-          lastActivityAt: now(),
-          messages: [],
-        };
+        conversation = { id: `conversation_${id()}`, tenantId: gateway.tenantId, gatewayId: gateway.id, customerPhone: payload.from, businessPhone: payload.to, ownerId: null, state: "needs_assignment", optedOut: false, createdAt: now(), lastActivityAt: now(), messages: [] };
         state.conversations.set(conversation.id, conversation);
       }
       conversation.lastActivityAt = now();
-      conversation.messages.push({
-        id: `message_${id()}`,
-        carrierMessageId: payload.messageId,
-        direction: "inbound",
-        body: payload.body,
-        status: "received",
-        at: envelope.sentAt,
-      });
+      conversation.messages.push({ id: `message_${id()}`, carrierMessageId: payload.messageId, direction: "inbound", body: payload.body, status: "received", at: envelope.sentAt });
       state.inboundIds.set(duplicateKey, conversation.id);
-      event("message.received", { conversationId: conversation.id, gatewayId: gateway.id });
+      event(gateway.tenantId, "message.received", { conversationId: conversation.id, gatewayId: gateway.id });
       return { conversationId: conversation.id, duplicate: false };
     },
 
@@ -244,88 +320,71 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), i
       if (!job) return null;
       job.status = "claimed";
       job.claimedAt = now();
-      event("outbound.claimed", { jobId: job.id, gatewayId: gateway.id });
-      return {
-        jobId: job.id,
-        to: job.to,
-        body: job.body,
-        ownerId: job.ownerId,
-        idempotencyKey: job.idempotencyKey,
-      };
+      event(gateway.tenantId, "outbound.claimed", { jobId: job.id, gatewayId: gateway.id });
+      return { jobId: job.id, to: job.to, body: job.body, ownerId: job.ownerId, idempotencyKey: job.idempotencyKey };
     },
 
     recordOutboundResult({ gateway, envelope }) {
       const job = state.outboundJobs.get(envelope.payload.jobId);
       if (!job || job.gatewayId !== gateway.id) throw fail("NOT_FOUND", "Outbound job was not found for this gateway");
-      if (job.status === "sent" || job.status === "delivered" || job.status === "failed") return;
+      if (["sent", "delivered", "failed"].includes(job.status)) return;
       job.status = envelope.payload.status;
-      job.completedAt = now();
       const conversation = state.conversations.get(job.conversationId);
       const message = conversation?.messages.find((item) => item.id === job.messageId);
-      if (message) message.status = envelope.payload.status;
-      event("outbound.result", { jobId: job.id, status: job.status });
+      if (message) message.status = job.status;
+      event(gateway.tenantId, "outbound.result", { jobId: job.id, status: job.status });
     },
 
-    assignConversation({ conversationId, employeeId }) {
-      const conversation = conversationFor(conversationId);
-      const employee = employeeFor(employeeId);
-      if (employee.tenantId && employee.tenantId !== conversation.tenantId) throw fail("FORBIDDEN", "Employee is not in this organization");
-      conversation.ownerId = employee.id;
+    assignConversation({ actor, conversationId, userId }) {
+      const current = actorFor(actor);
+      if (!managesInbox(current)) throw fail("FORBIDDEN", "Only an owner or manager can assign conversations");
+      const conversation = conversationFor(current, conversationId);
+      membershipFor(current.tenantId, userId);
+      conversation.ownerId = userId;
       conversation.state = "assigned";
       conversation.lastActivityAt = now();
-      event("conversation.assigned", { conversationId, employeeId });
-      return publicConversation(conversation, state.employees);
+      event(current.tenantId, "conversation.assigned", { actorId: current.userId, conversationId, userId });
+      return publicConversation(conversation);
     },
 
-    setOptOut({ conversationId, optedOut }) {
-      const conversation = conversationFor(conversationId);
+    setOptOut({ actor, conversationId, optedOut }) {
+      const current = actorFor(actor);
+      const conversation = conversationFor(current, conversationId);
+      if (!canAccessConversation(current, conversation)) throw fail("NOT_FOUND", "Conversation was not found");
       conversation.optedOut = Boolean(optedOut);
       conversation.state = conversation.optedOut ? "opted_out" : conversation.ownerId ? "assigned" : "needs_assignment";
       conversation.lastActivityAt = now();
-      event(conversation.optedOut ? "conversation.opted_out" : "conversation.opted_in", { conversationId });
-      return publicConversation(conversation, state.employees);
+      event(current.tenantId, conversation.optedOut ? "conversation.opted_out" : "conversation.opted_in", { actorId: current.userId, conversationId });
+      return publicConversation(conversation);
     },
 
-    queueReply({ conversationId, body }) {
-      const conversation = conversationFor(conversationId);
+    queueReply({ actor, conversationId, body }) {
+      const current = actorFor(actor);
+      const conversation = conversationFor(current, conversationId);
+      if (!canAccessConversation(current, conversation)) throw fail("NOT_FOUND", "Conversation was not found");
       if (conversation.optedOut) throw fail("FORBIDDEN", "This customer has opted out; do not send another SMS");
       if (!conversation.ownerId) throw fail("VALIDATION", "Assign this conversation before replying");
-      const message = {
-        id: `message_${id()}`,
-        direction: "outbound",
-        body: text(body, "Reply", 1600),
-        status: "queued",
-        at: now(),
-      };
+      const message = { id: `message_${id()}`, direction: "outbound", body: text(body, "Reply", 1600), status: "queued", at: now() };
       conversation.messages.push(message);
       conversation.lastActivityAt = now();
-      const job = {
-        id: `job_${id()}`,
-        gatewayId: conversation.gatewayId,
-        conversationId: conversation.id,
-        messageId: message.id,
-        ownerId: conversation.ownerId,
-        to: conversation.customerPhone,
-        body: message.body,
-        idempotencyKey: `relay:${message.id}`,
-        status: "queued",
-        createdAt: now(),
-      };
+      const job = { id: `job_${id()}`, gatewayId: conversation.gatewayId, conversationId: conversation.id, messageId: message.id, ownerId: conversation.ownerId, to: conversation.customerPhone, body: message.body, idempotencyKey: `relay:${message.id}`, status: "queued", createdAt: now() };
       state.outboundJobs.set(job.id, job);
-      event("outbound.queued", { conversationId, jobId: job.id, ownerId: conversation.ownerId });
+      event(current.tenantId, "outbound.queued", { actorId: current.userId, conversationId, jobId: job.id, ownerId: conversation.ownerId });
       return { jobId: job.id, message: { ...message } };
     },
 
-    snapshot() {
+    snapshot({ actor }) {
+      const current = actorFor(actor);
+      const tenant = tenantFor(current.tenantId);
+      const members = [...state.memberships.values()].filter((item) => item.tenantId === current.tenantId && item.active).map((item) => publicMember(userFor(item.userId), item)).sort((a, b) => a.extension.localeCompare(b.extension));
+      const conversations = [...state.conversations.values()].filter((item) => item.tenantId === current.tenantId && canAccessConversation(current, item)).map(publicConversation).sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
       return {
-        configured: Boolean(state.tenant),
-        tenant: state.tenant ? { ...state.tenant } : null,
-        employees: [...state.employees.values()].map(publicEmployee).sort((a, b) => a.extension.localeCompare(b.extension)),
-        gateways: [...state.gateways.values()].map(publicGateway).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
-        conversations: [...state.conversations.values()]
-          .map((conversation) => publicConversation(conversation, state.employees))
-          .sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt)),
-        audit: state.audit.map((item) => ({ ...item })),
+        tenant: { ...tenant }, viewer: publicMember(current.user, current.membership),
+        permissions: { managePeople: managesPeople(current), manageGateway: managesGateway(current), manageInbox: managesInbox(current) },
+        members: managesPeople(current) ? members : [publicMember(current.user, current.membership)],
+        gateways: managesGateway(current) ? [...state.gateways.values()].filter((item) => item.tenantId === current.tenantId).map(publicGateway) : [],
+        conversations,
+        audit: managesInbox(current) ? (state.auditByTenant.get(current.tenantId) || []).map((item) => ({ ...item })) : [],
       };
     },
   };

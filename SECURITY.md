@@ -17,7 +17,19 @@ private vulnerability-reporting flow for this repository instead.
 - The relay server must authorize the gateway before it exposes queued work.
 - Connectors must scope every conversation, assignment, and notification to a
   tenant.
+- User sessions, invitation codes, gateway credentials, and passwords must be
+  stored only as verifiers; a response may reveal a newly created code once,
+  never through a later status or list endpoint.
+- An agent must see only conversations assigned to that agent. Owner/manager
+  coverage must be an explicit tenant role and must be auditable.
 - A personal notification number is an alert destination, not permission to
   mirror a customer's private thread into consumer SMS.
 - Opt-outs override AI and human outbound messaging until a permitted re-opt-in
   process completes.
+
+## Reference-console boundary
+
+The included console is an in-memory local reference. Its password hashing and
+tenant authorization rules are exercised by tests, but it has no durable store,
+email verification/recovery, MFA, distributed rate limiting, or production
+monitoring. Do not host customer data with it until those layers are supplied.

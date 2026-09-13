@@ -11,52 +11,56 @@
     <main class="shell">
       <header class="topbar">
         <div><span class="mark">W</span><span>WGW Relay</span></div>
-        <div id="connection" class="connection">Secure operator console</div>
+        <div id="connection" class="connection">Private team inbox</div>
       </header>
       <div id="notice" class="notice" role="status" hidden></div>
 
-      <section id="unlock" class="center-card" hidden>
-        <p class="eyebrow">OWNER ACCESS</p>
-        <h1>Open your Relay</h1>
-        <p>Enter the operator access key configured on this server. It stays only in this browser tab.</p>
-        <form id="unlock-form" class="stack">
-          <label>Operator access key<input id="access-key" type="password" autocomplete="current-password" required></label>
-          <button type="submit">Open console</button>
-        </form>
-      </section>
-
-      <section id="onboarding" class="center-card" hidden>
-        <p class="eyebrow">THREE-STEP START</p>
-        <h1>Make the business number useful.</h1>
-        <p>This creates the owner extension. Add the relay phone and team only when you are ready.</p>
-        <form id="onboarding-form" class="stack">
-          <label>Business name<input name="organizationName" placeholder="White Glove Wireless" maxlength="120" required></label>
-          <label>Business texting number<input name="mainNumber" inputmode="tel" placeholder="+15551234567" required></label>
-          <label>Owner name<input name="ownerName" placeholder="Your name" maxlength="120" required></label>
-          <details>
-            <summary>Optional: send the owner an alert on a personal phone</summary>
-            <label>Owner alert number<input name="ownerAlertPhone" inputmode="tel" placeholder="+15551234567"></label>
+      <section id="auth" class="auth-grid" hidden>
+        <div class="center-card compact">
+          <p class="eyebrow">WELCOME BACK</p>
+          <h1>Sign in</h1>
+          <form id="login-form" class="stack">
+            <label>Email<input name="email" type="email" autocomplete="email" required></label>
+            <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+            <button type="submit">Open my inbox</button>
+          </form>
+        </div>
+        <div class="center-card compact">
+          <p class="eyebrow">NEW ORGANIZATION</p>
+          <h1>Start your Relay</h1>
+          <p>One business number. Your team receives only the conversations assigned to them.</p>
+          <form id="register-form" class="stack">
+            <label>Business name<input name="organizationName" placeholder="White Glove Wireless" maxlength="120" required></label>
+            <label>Business texting number<input name="mainNumber" inputmode="tel" placeholder="+15551234567" required></label>
+            <label>Your name<input name="name" autocomplete="name" maxlength="120" required></label>
+            <label>Your email<input name="email" type="email" autocomplete="email" required></label>
+            <label>Create a password<input name="password" type="password" minlength="12" autocomplete="new-password" required></label>
+            <button type="submit">Create organization</button>
+          </form>
+          <details class="invite-details"><summary>Joining an existing team?</summary>
+            <form id="invite-form" class="stack">
+              <label>Invite code<input name="inviteCode" autocomplete="one-time-code" required></label>
+              <label>Create a password<input name="password" type="password" minlength="12" autocomplete="new-password" required></label>
+              <button type="submit">Join team</button>
+            </form>
           </details>
-          <button type="submit">Create Relay</button>
-        </form>
+        </div>
       </section>
 
       <section id="dashboard" hidden>
         <div class="hero">
           <div>
-            <p class="eyebrow">BUSINESS NUMBER</p>
+            <p class="eyebrow" id="viewer-role">YOUR RELAY</p>
             <h1 id="organization-name">Relay</h1>
             <p id="business-number" class="muted"></p>
           </div>
-          <div class="hero-actions">
-            <button class="secondary" id="refresh">Refresh</button>
-            <button class="secondary" id="lock">Lock console</button>
-          </div>
+          <div class="hero-actions"><button class="secondary" id="refresh">Refresh</button><button class="secondary" id="logout">Sign out</button></div>
         </div>
         <nav class="tabs" aria-label="Relay sections">
           <button class="tab active" data-view="inbox">Inbox</button>
-          <button class="tab" data-view="people">People</button>
+          <button class="tab" data-view="team">Team</button>
           <button class="tab" data-view="phone">Relay phone</button>
+          <button class="tab" data-view="profile">My profile</button>
         </nav>
         <section id="view"></section>
       </section>

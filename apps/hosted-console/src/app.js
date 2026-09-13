@@ -5,42 +5,31 @@ import { createRelayService } from "../../../packages/server/src/relayService.js
 import { createHostedRelayStore } from "./store.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
-const staticFiles = new Map([
-  ["/", "../public/index.html"],
-  ["/app.js", "../public/app.js"],
-  ["/styles.css", "../public/styles.css"],
-]);
-const contentTypes = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-};
+const staticFiles = new Map([["/", "../public/index.html"], ["/app.js", "../public/app.js"], ["/styles.css", "../public/styles.css"]]);
+const contentTypes = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8" };
 
-function response(res, status, body = null) {
+function send(res, status, body = null, extraHeaders = {}) {
+  const headers = {
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+    "referrer-policy": "no-referrer",
+    "cross-origin-resource-policy": "same-origin",
+    ...extraHeaders,
+  };
   if (status === 204) {
-    res.writeHead(204);
+    res.writeHead(204, headers);
     res.end();
     return;
   }
   const serialized = JSON.stringify(body ?? {});
-  res.writeHead(status, {
-    "content-type": "application/json; charset=utf-8",
-    "content-length": Buffer.byteLength(serialized),
-    "cache-control": "no-store",
-    "x-content-type-options": "nosniff",
-  });
+  res.writeHead(status, { ...headers, "content-type": "application/json; charset=utf-8", "content-length": Buffer.byteLength(serialized) });
   res.end(serialized);
 }
 
 function errorResponse(res, error) {
-  const status = {
-    VALIDATION: 422,
-    CONFLICT: 409,
-    NOT_CONFIGURED: 409,
-    NOT_FOUND: 404,
-    FORBIDDEN: 403,
-  }[error?.code] || 500;
-  response(res, status, { error: status === 500 ? "Unexpected server error" : error.message });
+  const status = { VALIDATION: 422, CONFLICT: 409, NOT_FOUND: 404, FORBIDDEN: 403, UNAUTHENTICATED: 401 }[error?.code] || 500;
+  send(res, status, { error: status === 500 ? "Unexpected server error" : error.message });
 }
 
 async function jsonBody(req) {
@@ -57,9 +46,9 @@ async function jsonBody(req) {
   }
   if (!chunks.length) return {};
   try {
-    const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object");
-    return value;
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("not an object");
+    return body;
   } catch {
     const error = new Error("Request body must be a JSON object");
     error.code = "VALIDATION";
@@ -80,92 +69,93 @@ function routeMatch(pathname, expression) {
 async function staticResponse(res, pathname) {
   const relativePath = staticFiles.get(pathname);
   if (!relativePath) return false;
-  const url = new URL(relativePath, import.meta.url);
-  const body = await readFile(fileURLToPath(url));
+  const body = await readFile(fileURLToPath(new URL(relativePath, import.meta.url)));
   const extension = relativePath.slice(relativePath.lastIndexOf("."));
   res.writeHead(200, {
     "content-type": contentTypes[extension] || "application/octet-stream",
     "content-length": body.byteLength,
     "cache-control": "no-store",
+    "content-security-policy": "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
     "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+    "referrer-policy": "no-referrer",
   });
   res.end(body);
   return true;
 }
 
 /**
- * Creates a local runnable hosted-console contract. Its store is intentionally
- * injected so a production deployment can replace it with durable storage.
+ * Transport boundary for the reference console. Session and tenant decisions
+ * are delegated to the store so every protected operation remains tenant-scoped.
  */
-export function createHostedConsole({ adminToken, store = createHostedRelayStore() } = {}) {
-  if (typeof adminToken !== "string" || adminToken.length < 16) {
-    throw new Error("adminToken must be at least 16 characters");
-  }
+export function createHostedConsole({ store = createHostedRelayStore() } = {}) {
   const relay = createRelayService(store);
 
-  function isAdmin(req) {
-    return req.headers["x-relay-admin"] === adminToken;
+  function actor(req) {
+    const sessionToken = bearer(req);
+    if (!sessionToken) {
+      const error = new Error("Sign in to continue");
+      error.code = "UNAUTHENTICATED";
+      throw error;
+    }
+    return { actor: store.authenticateUser(sessionToken), sessionToken };
   }
 
   return async function handler(req, res) {
     const url = new URL(req.url || "/", "http://relay.local");
     const { pathname } = url;
     try {
-      if (req.method === "GET" && pathname === "/health") {
-        return response(res, 200, { ok: true, service: "wgw-relay-hosted-console" });
-      }
-      if (req.method === "GET" && pathname === "/api/status") {
-        return response(res, 200, { configured: store.snapshot().configured });
-      }
+      if (req.method === "GET" && pathname === "/health") return send(res, 200, { ok: true, service: "wgw-relay-hosted-console" });
+      if (req.method === "GET" && pathname === "/api/status") return send(res, 200, store.status());
+
       if (pathname.startsWith("/gateway/")) {
         const token = bearer(req);
-        if (!token) return response(res, 401, { error: "Gateway authentication failed" });
+        if (!token) return send(res, 401, { error: "Gateway authentication failed" });
         if (req.method === "POST" && pathname === "/gateway/heartbeat") {
           const result = await relay.heartbeat({ token, envelope: await jsonBody(req) });
-          return response(res, result.status, result.body);
+          return send(res, result.status, result.body);
         }
         if (req.method === "POST" && pathname === "/gateway/inbound") {
           const result = await relay.receive({ token, envelope: await jsonBody(req) });
-          return response(res, result.status, result.body);
+          return send(res, result.status, result.body);
         }
         if (req.method === "GET" && pathname === "/gateway/outbound") {
           const result = await relay.nextOutbound({ token, deviceId: url.searchParams.get("deviceId") || "" });
-          return response(res, result.status, result.body);
+          return send(res, result.status, result.body);
         }
         if (req.method === "POST" && pathname === "/gateway/outbound-result") {
           const result = await relay.acknowledgeOutbound({ token, envelope: await jsonBody(req) });
-          return response(res, result.status, result.body);
+          return send(res, result.status, result.body);
         }
-        return response(res, 404, { error: "Gateway route was not found" });
+        return send(res, 404, { error: "Gateway route was not found" });
       }
+
       if (pathname.startsWith("/api/")) {
-        if (!isAdmin(req)) return response(res, 401, { error: "Admin authentication required" });
-        if (req.method === "GET" && pathname === "/api/state") return response(res, 200, store.snapshot());
-        if (req.method === "POST" && pathname === "/api/onboarding") {
-          return response(res, 201, store.setup(await jsonBody(req)));
+        if (req.method === "POST" && pathname === "/api/register") return send(res, 201, store.registerTenant(await jsonBody(req)));
+        if (req.method === "POST" && pathname === "/api/login") return send(res, 200, store.signIn(await jsonBody(req)));
+        if (req.method === "POST" && pathname === "/api/invitations/accept") return send(res, 201, store.acceptInvitation(await jsonBody(req)));
+
+        const authenticated = actor(req);
+        if (req.method === "POST" && pathname === "/api/logout") {
+          store.signOut(authenticated.sessionToken);
+          return send(res, 204);
         }
-        if (req.method === "POST" && pathname === "/api/employees") {
-          return response(res, 201, store.addEmployee(await jsonBody(req)));
-        }
-        if (req.method === "POST" && pathname === "/api/gateways") {
-          return response(res, 201, store.pairGateway(await jsonBody(req)));
-        }
+        if (req.method === "GET" && pathname === "/api/state") return send(res, 200, store.snapshot({ actor: authenticated.actor }));
+        if (req.method === "POST" && pathname === "/api/profile") return send(res, 200, store.updateProfile({ actor: authenticated.actor, ...(await jsonBody(req)) }));
+        if (req.method === "POST" && pathname === "/api/invitations") return send(res, 201, store.createInvitation({ actor: authenticated.actor, ...(await jsonBody(req)) }));
+        if (req.method === "POST" && pathname === "/api/gateways") return send(res, 201, store.pairGateway({ actor: authenticated.actor, ...(await jsonBody(req)) }));
+
         const assignmentId = routeMatch(pathname, /^\/api\/conversations\/([^/]+)\/assignment$/);
-        if (req.method === "POST" && assignmentId) {
-          return response(res, 200, store.assignConversation({ conversationId: assignmentId, ...(await jsonBody(req)) }));
-        }
+        if (req.method === "POST" && assignmentId) return send(res, 200, store.assignConversation({ actor: authenticated.actor, conversationId: assignmentId, ...(await jsonBody(req)) }));
         const optOutId = routeMatch(pathname, /^\/api\/conversations\/([^/]+)\/opt-out$/);
-        if (req.method === "POST" && optOutId) {
-          return response(res, 200, store.setOptOut({ conversationId: optOutId, ...(await jsonBody(req)) }));
-        }
+        if (req.method === "POST" && optOutId) return send(res, 200, store.setOptOut({ actor: authenticated.actor, conversationId: optOutId, ...(await jsonBody(req)) }));
         const replyId = routeMatch(pathname, /^\/api\/conversations\/([^/]+)\/reply$/);
-        if (req.method === "POST" && replyId) {
-          return response(res, 202, store.queueReply({ conversationId: replyId, ...(await jsonBody(req)) }));
-        }
-        return response(res, 404, { error: "API route was not found" });
+        if (req.method === "POST" && replyId) return send(res, 202, store.queueReply({ actor: authenticated.actor, conversationId: replyId, ...(await jsonBody(req)) }));
+        return send(res, 404, { error: "API route was not found" });
       }
+
       if (req.method === "GET" && await staticResponse(res, pathname)) return;
-      return response(res, 404, { error: "Not found" });
+      return send(res, 404, { error: "Not found" });
     } catch (error) {
       return errorResponse(res, error);
     }

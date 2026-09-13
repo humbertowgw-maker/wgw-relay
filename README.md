@@ -37,8 +37,10 @@ customer thread into the employee's personal SMS application.
 ## Status
 
 This release has a tested relay protocol/server adapter plus a local runnable
-operator console. It does not yet ship a native mobile gateway, durable hosted
-tenant storage, a deployed account console, carrier entitlement, or AI
+multi-tenant reference console. It includes tenant-scoped user sessions,
+owner/manager/agent permissions, invitations, profile alert preferences, and
+private assigned inboxes. It does not yet ship a native mobile gateway, durable
+hosted tenant storage, a deployed account console, carrier entitlement, or AI
 concierge. Those require device-specific implementation and live carrier
 qualification before they are advertised as working.
 
@@ -52,9 +54,9 @@ npm test
 npm run check
 ```
 
-To evaluate the reference console locally, set a long random operator secret and
-run `RELAY_ADMIN_TOKEN='...' npm run start:console`. It binds to localhost and
-uses in-memory evaluation data; it is not a production deployment.
+Run `npm run start:console` to evaluate the reference console locally. It binds
+to localhost and uses in-memory evaluation data; it is not a production
+deployment.
 
 ## Open source and hosted service
 
@@ -70,6 +72,8 @@ operations, customer data, and the WGW Relay brand outside this repository.
 - Treat message bodies, phone numbers, and contact metadata as sensitive.
 - Require explicit notification preferences before sending alerts to an
   employee's personal number.
+- Give agents only their assigned conversations; owner/manager coverage is an
+  explicit role, not the default team view.
 - Process STOP/opt-out before an AI concierge or employee sends another SMS.
 
 See [SECURITY.md](SECURITY.md) and [docs/PROTOCOL.md](docs/PROTOCOL.md).
