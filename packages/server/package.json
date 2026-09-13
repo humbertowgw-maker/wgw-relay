@@ -1,0 +1,9 @@
+{
+  "name": "@wgw-relay/server",
+  "version": "0.1.0",
+  "description": "Adapter contract for a paired WGW Relay gateway.",
+  "type": "module",
+  "main": "./src/relayService.js",
+  "exports": "./src/relayService.js",
+  "license": "Apache-2.0"
+}

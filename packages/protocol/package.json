@@ -1,0 +1,9 @@
+{
+  "name": "@wgw-relay/protocol",
+  "version": "0.1.0",
+  "description": "Provider-neutral message envelope validation for WGW Relay.",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": "./src/index.js",
+  "license": "Apache-2.0"
+}

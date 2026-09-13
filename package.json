@@ -1,0 +1,18 @@
+{
+  "name": "@wgw-relay/monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Open-core cellular messaging relay and connector protocol.",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "node --test packages/protocol/test/*.test.js packages/server/test/*.test.js",
+    "check": "node --check packages/protocol/src/index.js && node --check packages/server/src/relayService.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "Apache-2.0"
+}
