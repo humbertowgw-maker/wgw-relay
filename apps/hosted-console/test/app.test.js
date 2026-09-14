@@ -20,6 +20,20 @@ async function request(baseUrl, path, { body, headers = {}, ...options } = {}) {
   return { response, body: response.status === 204 ? null : await response.json() };
 }
 
+test("serves the owner connections map with truthful connection states", async (t) => {
+  const { server, baseUrl } = await runningServer();
+  t.after(() => server.close());
+
+  const [index, app] = await Promise.all([fetch(`${baseUrl}/`), fetch(`${baseUrl}/app.js`)]);
+  assert.equal(index.status, 200);
+  assert.match(await index.text(), /data-view="connections"/);
+  assert.equal(app.status, 200);
+  const script = await app.text();
+  assert.match(script, /function connectionsView\(\)/);
+  assert.match(script, /Active — a current Relay heartbeat has confirmed it/);
+  assert.match(script, /saved plan is never presented as a live connection/);
+});
+
 test("runs a signed-in tenant user flow with invitation permissions and paired-device delivery", async (t) => {
   const { server, baseUrl } = await runningServer();
   t.after(() => server.close());

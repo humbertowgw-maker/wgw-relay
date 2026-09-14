@@ -17,6 +17,8 @@ infrastructure around the same protocol.
   SIP connection records (without browser-stored PBX credentials);
 - an owner-controlled PBX call map: main business number to a primary
   extension, bounded ring time, then voicemail or owner follow-up;
+- an owner-only Connections tab that separates verified Relay-device heartbeats
+  from configured PBX and employee routes that are still awaiting activation;
 - expiring, one-use teammate invitations and individual alert preferences;
 - one-time phone-gateway pairing credentials (the stored value is hashed);
 - assignment, opt-out locking, queued replies, delivery state, and audit events;

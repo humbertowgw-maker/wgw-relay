@@ -44,7 +44,9 @@ extensions, call-forward destinations, AI/PBX handoff topics, and secure
 account invitations; they can also save organization-wide text/voicemail alert
 rules and Mitel or generic SIP connection plans. Owners can save an explicit
 business call map: business number → primary extension → voicemail or owner
-follow-up, with a bounded ring time. The setup flow records a number plan for
+follow-up, with a bounded ring time. The owner-only Connections tab visually
+maps the desired call path and clearly separates verified Relay-device
+heartbeats from saved routes that still await private activation. The setup flow records a number plan for
 calls, texts, voicemail, call forwarding, and alerts. It does not yet ship a
 native mobile gateway, durable hosted tenant storage, a deployed account
 console, carrier entitlement, live PBX/SIP provisioning, voicemail
