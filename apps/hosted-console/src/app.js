@@ -144,6 +144,7 @@ export function createHostedConsole({ store = createHostedRelayStore() } = {}) {
         if (req.method === "POST" && pathname === "/api/profile") return send(res, 200, store.updateProfile({ actor: authenticated.actor, ...(await jsonBody(req)) }));
         if (req.method === "POST" && pathname === "/api/phone-setup") return send(res, 200, store.configurePhoneSetup({ actor: authenticated.actor, ...(await jsonBody(req)) }));
         if (req.method === "POST" && pathname === "/api/owner-delivery") return send(res, 200, store.configureOwnerDelivery({ actor: authenticated.actor, ...(await jsonBody(req)) }));
+        if (req.method === "POST" && pathname === "/api/pbx-call-map") return send(res, 200, store.configurePbxCallMap({ actor: authenticated.actor, ...(await jsonBody(req)) }));
         if (req.method === "POST" && pathname === "/api/route-profiles") return send(res, 201, store.createRouteProfile({ actor: authenticated.actor, ...(await jsonBody(req)) }));
         if (req.method === "POST" && pathname === "/api/my-route-profile") return send(res, 200, store.updateMyRouteProfile({ actor: authenticated.actor, ...(await jsonBody(req)) }));
         if (req.method === "POST" && pathname === "/api/phone-connections") return send(res, 201, store.createPhoneConnection({ actor: authenticated.actor, ...(await jsonBody(req)) }));

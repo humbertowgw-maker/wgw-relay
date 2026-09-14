@@ -5,6 +5,8 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const EXTENSION = /^[A-Za-z0-9_-]{1,16}$/;
 const INVITABLE_ROLES = new Set(["manager", "agent"]);
 const PHONE_CONNECTION_TYPES = new Set(["mitel", "generic_sip"]);
+const PBX_TYPES = new Set(["asterisk_mitel", "generic_sip"]);
+const PBX_FALLBACKS = new Set(["voicemail", "owner_alert"]);
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -150,6 +152,20 @@ function publicPhoneConnection(connection) {
   };
 }
 
+function publicPbxCallMap(callMap) {
+  if (!callMap) return null;
+  return {
+    label: callMap.label,
+    type: callMap.type,
+    primaryExtension: callMap.primaryExtension,
+    ringSeconds: callMap.ringSeconds,
+    fallback: callMap.fallback,
+    voicemailExtension: callMap.voicemailExtension,
+    bridgeState: callMap.bridgeState,
+    updatedAt: callMap.updatedAt,
+  };
+}
+
 function routeTopics(value) {
   if (value === undefined || value === null || value === "") return [];
   const values = Array.isArray(value) ? value : String(value).split(",");
@@ -164,6 +180,18 @@ function routeTopics(value) {
 function optionalHost(value) {
   if (value === undefined || value === null || value === "") return null;
   return text(value, "PBX address", 254);
+}
+
+function extension(value, field) {
+  const normalized = text(value, field, 16);
+  if (!EXTENSION.test(normalized)) throw fail("VALIDATION", `${field} may use letters, numbers, hyphens, and underscores only`);
+  return normalized;
+}
+
+function ringSeconds(value) {
+  const seconds = Number(value);
+  if (!Number.isInteger(seconds) || seconds < 10 || seconds > 120) throw fail("VALIDATION", "Ring time must be between 10 and 120 seconds");
+  return seconds;
 }
 
 function managesPeople(actor) { return actor.role === "owner" || actor.role === "manager"; }
@@ -341,6 +369,7 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
           connectionState: "waiting_for_live_connection",
           updatedAt: null,
         },
+        pbxCallMap: null,
         createdAt,
       };
       const credentials = passwordRecord(password(passwordInput));
@@ -506,6 +535,29 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
       return publicPhoneConnection(connection);
     },
 
+    configurePbxCallMap({ actor, label, type, primaryExtension, ringSeconds: requestedRingSeconds, fallback, voicemailExtension }) {
+      const current = actorFor(actor);
+      if (!managesGateway(current)) throw fail("FORBIDDEN", "Only the organization owner can manage the PBX call map");
+      const tenant = tenantFor(current.tenantId);
+      if (!tenant.mainNumber || !tenant.phoneSetup?.completedAt) throw fail("VALIDATION", "Complete the business-number setup before mapping PBX calls");
+      if (!PBX_TYPES.has(type)) throw fail("VALIDATION", "Choose Mitel / Asterisk or generic SIP");
+      if (!PBX_FALLBACKS.has(fallback)) throw fail("VALIDATION", "Choose voicemail or owner alert as the fallback");
+      const primary = extension(primaryExtension, "Primary extension");
+      const voicemail = fallback === "voicemail" ? extension(voicemailExtension || primary, "Voicemail extension") : null;
+      tenant.pbxCallMap = {
+        label: text(label, "PBX name", 120),
+        type,
+        primaryExtension: primary,
+        ringSeconds: ringSeconds(requestedRingSeconds),
+        fallback,
+        voicemailExtension: voicemail,
+        bridgeState: "saved_waiting_for_private_bridge",
+        updatedAt: now(),
+      };
+      event(current.tenantId, "pbx.call_map_configured", { actorId: current.userId, primaryExtension: primary, ringSeconds: tenant.pbxCallMap.ringSeconds, fallback });
+      return publicPbxCallMap(tenant.pbxCallMap);
+    },
+
     createInvitation({ actor, name, email, role, extension }) {
       const current = actorFor(actor);
       if (!managesPeople(current)) throw fail("FORBIDDEN", "Only an owner or manager can invite teammates");
@@ -651,6 +703,7 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
           createdAt: tenant.createdAt,
           phoneSetup: publicPhoneSetup(tenant.phoneSetup),
           ownerDelivery: managesGateway(current) ? publicOwnerDelivery(tenant.ownerDelivery, current.membership) : null,
+          pbxCallMap: managesGateway(current) ? publicPbxCallMap(tenant.pbxCallMap) : null,
         },
         viewer: publicMember(current.user, current.membership),
         permissions: { managePeople: managesPeople(current), manageGateway: managesGateway(current), manageInbox: managesInbox(current), manageRouting: managesGateway(current) },

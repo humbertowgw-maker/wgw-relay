@@ -42,10 +42,12 @@ owner/manager/agent permissions, invitations, profile alert preferences, and
 private assigned inboxes. Owners can create employee route profiles with
 extensions, call-forward destinations, AI/PBX handoff topics, and secure
 account invitations; they can also save organization-wide text/voicemail alert
-rules and Mitel or generic SIP connection plans. The setup flow records a
-number plan for calls, texts, voicemail, call forwarding, and alerts. It does
-not yet ship a native mobile gateway, durable hosted tenant storage, a deployed
-account console, carrier entitlement, live PBX/SIP provisioning, voicemail
+rules and Mitel or generic SIP connection plans. Owners can save an explicit
+business call map: business number → primary extension → voicemail or owner
+follow-up, with a bounded ring time. The setup flow records a number plan for
+calls, texts, voicemail, call forwarding, and alerts. It does not yet ship a
+native mobile gateway, durable hosted tenant storage, a deployed account
+console, carrier entitlement, live PBX/SIP provisioning, voicemail
 capture/transcription, notification delivery, or AI concierge. Those require device-specific
 implementation and live carrier qualification before they are advertised as
 working.

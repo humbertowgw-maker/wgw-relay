@@ -75,14 +75,18 @@ test("exposes the owner control center APIs without granting them to employees",
   const agentHeaders = { authorization: `Bearer ${agent.body.sessionToken}` };
 
   assert.equal((await request(baseUrl, "/api/owner-delivery", { method: "POST", headers: ownerHeaders, body: { textsToOwner: true, voicemailsToOwner: true, alertMode: "summary" } })).response.status, 200);
+  const callMap = await request(baseUrl, "/api/pbx-call-map", { method: "POST", headers: ownerHeaders, body: { label: "Current Mitel", type: "asterisk_mitel", primaryExtension: "101", ringSeconds: 25, fallback: "voicemail", voicemailExtension: "101" } });
+  assert.equal(callMap.response.status, 200);
   assert.equal((await request(baseUrl, "/api/phone-connections", { method: "POST", headers: ownerHeaders, body: { type: "mitel", label: "Main office", pbxHost: "pbx.example.local", extension: "101" } })).response.status, 201);
   assert.equal((await request(baseUrl, "/api/phone-connections", { method: "POST", headers: agentHeaders, body: { type: "mitel", label: "Nope", extension: "101" } })).response.status, 403);
+  assert.equal((await request(baseUrl, "/api/pbx-call-map", { method: "POST", headers: agentHeaders, body: { label: "Nope", type: "asterisk_mitel", primaryExtension: "101", ringSeconds: 25, fallback: "voicemail", voicemailExtension: "101" } })).response.status, 403);
   assert.equal((await request(baseUrl, "/api/my-route-profile", { method: "POST", headers: agentHeaders, body: { callForwardNumber: "+15550002222", routingTopics: "support" } })).response.status, 200);
 
   const ownerState = await request(baseUrl, "/api/state", { headers: ownerHeaders });
   const agentState = await request(baseUrl, "/api/state", { headers: agentHeaders });
   assert.equal(ownerState.body.routeProfiles[0].callForwardNumber, "+15550002222");
   assert.equal(ownerState.body.phoneConnections[0].type, "mitel");
+  assert.equal(ownerState.body.tenant.pbxCallMap.primaryExtension, "101");
   assert.equal(agentState.body.permissions.manageRouting, false);
   assert.equal(agentState.body.routeProfiles.length, 1);
 });

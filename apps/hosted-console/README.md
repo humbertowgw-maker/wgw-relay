@@ -15,6 +15,8 @@ infrastructure around the same protocol.
   number, future AI/PBX routing topics, and a linked account invitation;
 - owner-wide text and voicemail alert preferences plus planned Mitel or generic
   SIP connection records (without browser-stored PBX credentials);
+- an owner-controlled PBX call map: main business number to a primary
+  extension, bounded ring time, then voicemail or owner follow-up;
 - expiring, one-use teammate invitations and individual alert preferences;
 - one-time phone-gateway pairing credentials (the stored value is hashed);
 - assignment, opt-out locking, queued replies, delivery state, and audit events;
@@ -35,4 +37,6 @@ Saving a number plan does not activate carrier calls or voicemail by itself;
 that requires a paired Relay phone or PBX connection. Saving an employee route,
 owner alert rule, or phone-system plan also does not activate call forwarding,
 SMS forwarding, voicemail capture, PBX registration, or AI handoff until that
-connection is securely configured and verified.
+connection is securely configured and verified. The PBX call map is an
+auditable desired configuration; a private bridge must apply it to the actual
+phone system before calls are rerouted.

@@ -89,6 +89,30 @@ test("turns a plain-language number plan into tenant-scoped call, text, and voic
   assert.equal(configured.phoneSetup.connectionState, "awaiting_gateway_or_pbx_connection");
 });
 
+test("puts the owner in control of a tenant-scoped PBX business-call map", () => {
+  const store = fixture();
+  const owner = register(store, "Owner", "owner@example.com", "+15557654321");
+  const ownerActor = store.authenticateUser(owner.sessionToken);
+  const callMap = store.configurePbxCallMap({
+    actor: ownerActor,
+    label: "Current Mitel 5330e",
+    type: "asterisk_mitel",
+    primaryExtension: "101",
+    ringSeconds: 25,
+    fallback: "voicemail",
+    voicemailExtension: "101",
+  });
+  assert.equal(callMap.primaryExtension, "101");
+  assert.equal(callMap.voicemailExtension, "101");
+  assert.equal(callMap.bridgeState, "saved_waiting_for_private_bridge");
+  assert.equal(store.snapshot({ actor: ownerActor }).tenant.pbxCallMap.ringSeconds, 25);
+
+  const beta = register(store, "Beta", "beta@example.com", "+15559876543");
+  const betaActor = store.authenticateUser(beta.sessionToken);
+  assert.equal(store.snapshot({ actor: betaActor }).tenant.pbxCallMap, null);
+  assert.throws(() => store.configurePbxCallMap({ actor: betaActor, label: "Bad", type: "asterisk_mitel", primaryExtension: "101", ringSeconds: 5, fallback: "voicemail", voicemailExtension: "101" }), /Ring time must be between/);
+});
+
 test("lets an owner reserve an employee extension, link it on invitation acceptance, and control routing", () => {
   const store = fixture();
   const owner = register(store, "Owner", "owner@example.com", "+15557654321");
