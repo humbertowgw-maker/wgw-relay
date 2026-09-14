@@ -22,7 +22,7 @@ async function api(path, options = {}) {
 }
 
 function show(screen) {
-  ["auth", "phone-onboarding", "dashboard"].forEach((id) => { $(`#${id}`).hidden = id !== screen; });
+  ["auth", "phone-onboarding", "billing", "dashboard"].forEach((id) => { $(`#${id}`).hidden = id !== screen; });
 }
 
 function setAuthMode(mode) {
@@ -56,6 +56,21 @@ async function refresh() {
 }
 
 function statusClass(value) { return value === "ready" ? "ready" : value === "awaiting_first_heartbeat" ? "warn" : ""; }
+
+function renderBillingGate() {
+  const billing = state.tenant.billing;
+  const owner = state.permissions.manageGateway;
+  const checkoutReady = Boolean(billing.checkoutAvailable && billing.webhookReady);
+  const waiting = billing.status === "checkout_pending";
+  $("#billing-title").textContent = waiting ? "We’re confirming your subscription" : owner ? "Activate your Relay" : "Your Relay is awaiting activation";
+  $("#billing-copy").textContent = waiting ? "Stripe has Checkout information. Your owner will be let in as soon as the signed payment event arrives." : owner ? "Start a secure subscription before setting up business numbers, phones, or employee routes." : "Ask your organization owner to activate the Relay subscription.";
+  $("#billing-status").innerHTML = `<strong>${escapeHtml(billing.status.replaceAll("_", " "))}</strong><p class="muted">${checkoutReady ? "Subscription checkout is ready." : "Billing setup is incomplete. Add the Stripe keys, Price ID, public app URL, and webhook secret in the production environment."}</p>`;
+  const checkout = $("#start-checkout");
+  checkout.hidden = !owner;
+  checkout.disabled = !checkoutReady || waiting;
+  checkout.textContent = waiting ? "Waiting for Stripe confirmation" : "Continue to secure checkout";
+  show("billing");
+}
 
 function conversationCard(conversation) {
   const last = conversation.messages.at(-1);
@@ -172,6 +187,7 @@ function render() {
     setAuthMode(authMode);
     return;
   }
+  if (state.tenant.billing?.required && !state.tenant.billing.accessGranted) return renderBillingGate();
   if (!state.tenant.phoneSetup?.completedAt) return show("phone-onboarding");
   show("dashboard");
   $("#organization-name").textContent = state.tenant.organizationName;
@@ -217,7 +233,8 @@ document.addEventListener("click", async (event) => {
   const revokeBridge = event.target.closest("[data-revoke-pbx-bridge]");
   if (revokeBridge) { try { await api(`/api/pbx-bridges/${revokeBridge.dataset.revokePbxBridge}`, { method: "DELETE" }); await refresh(); setNotice("PBX Bridge credential revoked. It can no longer check in."); } catch (error) { setNotice(error.message); } return; }
   if (event.target.id === "refresh") { try { await refresh(); setNotice("Inbox refreshed."); } catch (error) { setNotice(error.message); } return; }
-  if (event.target.id === "logout") { try { await api("/api/logout", { method: "POST" }); } finally { sessionStorage.removeItem("wgw-relay-session"); sessionToken = ""; state = null; selectedConversationId = null; show("auth"); } return; }
+  if (["logout", "logout-from-billing"].includes(event.target.id)) { try { await api("/api/logout", { method: "POST" }); } finally { sessionStorage.removeItem("wgw-relay-session"); sessionToken = ""; state = null; selectedConversationId = null; show("auth"); } return; }
+  if (event.target.id === "start-checkout") { try { event.target.disabled = true; const checkout = await api("/api/billing/checkout", { method: "POST" }); window.location.assign(checkout.checkoutUrl); } catch (error) { event.target.disabled = false; setNotice(error.message); } return; }
   const select = event.target.closest("[data-select-conversation]");
   if (select) { selectedConversationId = select.dataset.selectConversation; render(); return; }
   const assign = event.target.closest("[data-assign]");

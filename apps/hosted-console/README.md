@@ -23,6 +23,8 @@ infrastructure around the same protocol.
   health reports, Bridge-reported call-map state, and immediate revocation;
 - expiring, one-use teammate invitations and individual alert preferences;
 - one-time phone-gateway pairing credentials (the stored value is hashed);
+- a Stripe-hosted subscription gate that is enabled only when explicitly
+  configured and verifies signed webhook events before granting access;
 - assignment, opt-out locking, queued replies, delivery state, and audit events;
 - gateway heartbeat, inbound-message, outbound-work, and result endpoints.
 

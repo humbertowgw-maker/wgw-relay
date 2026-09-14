@@ -29,7 +29,8 @@ private vulnerability-reporting flow for this repository instead.
 
 ## Reference-console boundary
 
-The included console is an in-memory local reference. Its password hashing and
-tenant authorization rules are exercised by tests, but it has no durable store,
-email verification/recovery, MFA, distributed rate limiting, or production
-monitoring. Do not host customer data with it until those layers are supplied.
+The included console is an in-memory local reference by default. It can use a
+private mounted volume for one-process persistence, but it has no database
+migrations, email verification/recovery, MFA, distributed rate limiting, or
+production monitoring. Do not scale it or publicly onboard customer data until
+those layers are supplied.

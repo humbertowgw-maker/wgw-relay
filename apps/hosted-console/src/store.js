@@ -9,6 +9,20 @@ const PBX_TYPES = new Set(["asterisk_mitel", "generic_sip"]);
 const PBX_FALLBACKS = new Set(["voicemail", "owner_alert"]);
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const PERSISTED_MAPS = ["tenants", "users", "userByEmail", "memberships", "sessions", "invitations", "billingEvents", "routeProfiles", "phoneConnections", "pbxBridges", "gateways", "conversations", "inboundIds", "outboundJobs", "auditByTenant"];
+
+function emptyState() {
+  return Object.fromEntries(PERSISTED_MAPS.map((key) => [key, new Map()]));
+}
+
+function restoreState(persistedState) {
+  const source = persistedState?.state || persistedState || {};
+  const restored = emptyState();
+  PERSISTED_MAPS.forEach((key) => {
+    if (Array.isArray(source[key])) restored[key] = new Map(source[key]);
+  });
+  return restored;
+}
 
 function fail(code, message) {
   const error = new Error(message);
@@ -180,6 +194,17 @@ function publicPbxBridge(bridge) {
   };
 }
 
+function publicBilling(billing, required) {
+  const status = required ? billing?.status || "unpaid" : "not_required";
+  return {
+    required,
+    status,
+    accessGranted: !required || ["active", "trialing"].includes(status),
+    checkoutStartedAt: billing?.checkoutStartedAt || null,
+    updatedAt: billing?.updatedAt || null,
+  };
+}
+
 function routeTopics(value) {
   if (value === undefined || value === null || value === "") return [];
   const values = Array.isArray(value) ? value : String(value).split(",");
@@ -217,11 +242,8 @@ function managesInbox(actor) { return actor.role === "owner" || actor.role === "
  * authenticated actor. Passwords, sessions, invitation codes, and pairing
  * tokens are hashed and never returned after their one issuance response.
  */
-export function createHostedRelayStore({ now = () => new Date().toISOString(), nowMs = () => Date.now(), id = randomUUID, token = () => randomBytes(32).toString("base64url") } = {}) {
-  const state = {
-    tenants: new Map(), users: new Map(), userByEmail: new Map(), memberships: new Map(), sessions: new Map(), invitations: new Map(),
-    routeProfiles: new Map(), phoneConnections: new Map(), pbxBridges: new Map(), gateways: new Map(), conversations: new Map(), inboundIds: new Map(), outboundJobs: new Map(), auditByTenant: new Map(),
-  };
+export function createHostedRelayStore({ now = () => new Date().toISOString(), nowMs = () => Date.now(), id = randomUUID, token = () => randomBytes(32).toString("base64url"), billingRequired = false, persistedState = null } = {}) {
+  const state = restoreState(persistedState);
 
   function event(tenantId, action, details = {}) {
     const audit = state.auditByTenant.get(tenantId) || [];
@@ -234,6 +256,10 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
     const tenant = state.tenants.get(tenantId);
     if (!tenant) throw fail("NOT_FOUND", "Organization was not found");
     return tenant;
+  }
+
+  function billingAllows(tenant) {
+    return publicBilling(tenant.billing, billingRequired).accessGranted;
   }
 
   function userFor(userId) {
@@ -355,6 +381,9 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
   }
 
   return {
+    exportPersistentState() {
+      return { version: 1, state: Object.fromEntries(PERSISTED_MAPS.map((key) => [key, [...state[key].entries()]])) };
+    },
     status() { return { registrationOpen: true }; },
 
     registerTenant({ organizationName, mainNumber, name, email, password: passwordInput, personalPhone, alertEnabled = false }) {
@@ -384,6 +413,7 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
           updatedAt: null,
         },
         pbxCallMap: null,
+        billing: { status: billingRequired ? "unpaid" : "not_required", checkoutStartedAt: null, updatedAt: createdAt, stripeCustomerId: null, stripeSubscriptionId: null, stripeCheckoutSessionId: null },
         createdAt,
       };
       const credentials = passwordRecord(password(passwordInput));
@@ -654,14 +684,45 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
 
     authenticateGateway({ token: gatewayToken, deviceId }) {
       const gateway = state.gateways.get(deviceId);
-      if (!gateway || !sameSecret(gateway.tokenHash, gatewayToken)) return null;
+      if (!gateway || !billingAllows(tenantFor(gateway.tenantId)) || !sameSecret(gateway.tokenHash, gatewayToken)) return null;
       return { id: gateway.id, tenantId: gateway.tenantId, phoneNumber: gateway.phoneNumber, label: gateway.label };
     },
 
     authenticatePbxBridge({ token: bridgeToken, bridgeId }) {
       const bridge = state.pbxBridges.get(bridgeId);
-      if (!bridge || bridge.state === "revoked" || !sameSecret(bridge.tokenHash, bridgeToken)) return null;
+      if (!bridge || bridge.state === "revoked" || !billingAllows(tenantFor(bridge.tenantId)) || !sameSecret(bridge.tokenHash, bridgeToken)) return null;
       return { id: bridge.id, tenantId: bridge.tenantId, label: bridge.label };
+    },
+
+    hasBillingAccess({ actor }) {
+      const current = actorFor(actor);
+      return billingAllows(tenantFor(current.tenantId));
+    },
+
+    recordBillingCheckout({ actor, checkoutSessionId }) {
+      const current = actorFor(actor);
+      if (!managesGateway(current)) throw fail("FORBIDDEN", "Only the organization owner can start billing checkout");
+      const tenant = tenantFor(current.tenantId);
+      if (!billingRequired) return publicBilling(tenant.billing, billingRequired);
+      tenant.billing.status = "checkout_pending";
+      tenant.billing.stripeCheckoutSessionId = text(checkoutSessionId, "Stripe Checkout Session ID", 255);
+      tenant.billing.checkoutStartedAt = now();
+      tenant.billing.updatedAt = now();
+      event(current.tenantId, "billing.checkout_started", { actorId: current.userId });
+      return publicBilling(tenant.billing, billingRequired);
+    },
+
+    applyStripeBillingEvent({ tenantId, eventId, status, stripeCustomerId = null, stripeSubscriptionId = null }) {
+      if (!["active", "trialing", "past_due", "canceled", "unpaid"].includes(status)) throw fail("VALIDATION", "Billing status was not supported");
+      const tenant = tenantFor(tenantId);
+      if (state.billingEvents.has(eventId)) return publicBilling(tenant.billing, billingRequired);
+      state.billingEvents.set(eventId, { tenantId, processedAt: now() });
+      tenant.billing.status = status;
+      if (stripeCustomerId) tenant.billing.stripeCustomerId = stripeCustomerId;
+      if (stripeSubscriptionId) tenant.billing.stripeSubscriptionId = stripeSubscriptionId;
+      tenant.billing.updatedAt = now();
+      event(tenant.id, "billing.subscription_updated", { status });
+      return publicBilling(tenant.billing, billingRequired);
     },
 
     recordPbxBridgeHeartbeat({ bridge, envelope }) {
@@ -775,6 +836,7 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
           phoneSetup: publicPhoneSetup(tenant.phoneSetup),
           ownerDelivery: managesGateway(current) ? publicOwnerDelivery(tenant.ownerDelivery, current.membership) : null,
           pbxCallMap: managesGateway(current) ? publicPbxCallMap(tenant.pbxCallMap) : null,
+          billing: publicBilling(tenant.billing, billingRequired),
         },
         viewer: publicMember(current.user, current.membership),
         permissions: { managePeople: managesPeople(current), manageGateway: managesGateway(current), manageInbox: managesInbox(current), manageRouting: managesGateway(current) },

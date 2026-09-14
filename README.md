@@ -93,3 +93,5 @@ See [SECURITY.md](SECURITY.md) and [docs/PROTOCOL.md](docs/PROTOCOL.md).
 See the staged [implementation plan](docs/IMPLEMENTATION_PLAN.md) and the
 [Private PBX Bridge contract](docs/PBX_BRIDGE.md) for the path from reference
 console to a verified phone platform.
+For the Stripe subscription gate and container configuration, see
+[billing and deployment](docs/BILLING_AND_DEPLOYMENT.md).

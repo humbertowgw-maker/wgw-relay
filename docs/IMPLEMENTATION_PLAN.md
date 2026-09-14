@@ -13,7 +13,8 @@ Status: **in progress**
   device pairing, and visual Connections status.
 - [x] Private PBX Bridge enrollment, revocation, authenticated heartbeat, and
   Bridge-reported call-map state.
-- [ ] Durable tenant database and migrations.
+- [x] Durable single-instance tenant store on a mounted private volume.
+- [ ] Database adapter and migrations for multi-instance production.
 - [ ] Hosted production environment, encrypted secret management, backups,
   structured logs, rate limits, email verification/recovery, and MFA.
 

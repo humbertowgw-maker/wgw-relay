@@ -2,9 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createHostedConsoleServer } from "../src/app.js";
+import { createHostedRelayStore } from "../src/store.js";
 
-async function runningServer() {
-  const server = createHostedConsoleServer();
+async function runningServer(options = {}) {
+  const server = createHostedConsoleServer(options);
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const { port } = server.address();
@@ -34,6 +35,57 @@ test("serves the owner connections map with truthful connection states", async (
   assert.match(script, /Create Bridge enrollment credential/);
   assert.match(script, /Active — a current Relay heartbeat has confirmed it/);
   assert.match(script, /saved plan is never presented as a live connection/);
+});
+
+test("fails closed behind an owner-only subscription gate until Stripe confirms payment", async (t) => {
+  const store = createHostedRelayStore({ billingRequired: true });
+  const billing = {
+    checkoutConfigured: () => true,
+    webhookConfigured: () => true,
+    createCheckoutSession: async () => ({ checkoutSessionId: "cs_test_123", checkoutUrl: "https://checkout.stripe.com/c/pay/cs_test_123" }),
+    verifyWebhook: () => { throw new Error("not used in this test"); },
+    entitlementFromEvent: () => null,
+  };
+  const { server, baseUrl } = await runningServer({ store, billing });
+  t.after(() => server.close());
+
+  const owner = await request(baseUrl, "/api/register", { method: "POST", body: { organizationName: "WGW", name: "Owner", email: "owner@example.com", password: "owner-long-password" } });
+  const ownerHeaders = { authorization: `Bearer ${owner.body.sessionToken}` };
+  const unpaidState = await request(baseUrl, "/api/state", { headers: ownerHeaders });
+  assert.equal(unpaidState.body.tenant.billing.accessGranted, false);
+  assert.equal((await request(baseUrl, "/api/phone-setup", { method: "POST", headers: ownerHeaders, body: { businessNumber: "+15557654321", callsEnabled: true, textsEnabled: true, voicemailEnabled: true, callForwardNumber: "+15551234567" } })).response.status, 402);
+
+  const checkout = await request(baseUrl, "/api/billing/checkout", { method: "POST", headers: ownerHeaders });
+  assert.equal(checkout.response.status, 201);
+  assert.equal(checkout.body.checkoutUrl, "https://checkout.stripe.com/c/pay/cs_test_123");
+  store.applyStripeBillingEvent({ tenantId: owner.body.tenant.id, eventId: "evt_paid", status: "active", stripeCustomerId: "cus_123", stripeSubscriptionId: "sub_123" });
+  assert.equal((await request(baseUrl, "/api/phone-setup", { method: "POST", headers: ownerHeaders, body: { businessNumber: "+15557654321", callsEnabled: true, textsEnabled: true, voicemailEnabled: true, callForwardNumber: "+15551234567" } })).response.status, 200);
+});
+
+test("accepts only a verified Stripe webhook path to unlock a tenant", async (t) => {
+  const store = createHostedRelayStore({ billingRequired: true });
+  const billing = {
+    checkoutConfigured: () => true,
+    webhookConfigured: () => true,
+    createCheckoutSession: async () => { throw new Error("not used in this test"); },
+    verifyWebhook: ({ signature }) => {
+      assert.equal(signature, "verified-signature");
+      return { id: "evt_paid", type: "checkout.session.completed", data: { object: {} } };
+    },
+    entitlementFromEvent: (event) => ({ tenantId: event.data.object.tenantId, eventId: event.id, status: "active" }),
+  };
+  const { server, baseUrl } = await runningServer({ store, billing });
+  t.after(() => server.close());
+
+  const owner = await request(baseUrl, "/api/register", { method: "POST", body: { organizationName: "WGW", name: "Owner", email: "owner@example.com", password: "owner-long-password" } });
+  billing.verifyWebhook = ({ signature }) => {
+    assert.equal(signature, "verified-signature");
+    return { id: "evt_paid", type: "checkout.session.completed", data: { object: { tenantId: owner.body.tenant.id } } };
+  };
+  const webhook = await fetch(`${baseUrl}/webhooks/stripe`, { method: "POST", headers: { "content-type": "application/json", "stripe-signature": "verified-signature" }, body: "{}" });
+  assert.equal(webhook.status, 200);
+  const state = await request(baseUrl, "/api/state", { headers: { authorization: `Bearer ${owner.body.sessionToken}` } });
+  assert.equal(state.body.tenant.billing.accessGranted, true);
 });
 
 test("runs a signed-in tenant user flow with invitation permissions and paired-device delivery", async (t) => {

@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import { createRelayService } from "../../../packages/server/src/relayService.js";
 import { createPbxBridgeService } from "../../../packages/server/src/pbxBridgeService.js";
 import { createHostedRelayStore } from "./store.js";
+import { createFileBackedRelayStore } from "./fileBackedStore.js";
+import { createStripeBilling } from "./stripeBilling.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
 const staticFiles = new Map([["/", "../public/index.html"], ["/app.js", "../public/app.js"], ["/styles.css", "../public/styles.css"]]);
@@ -29,7 +31,7 @@ function send(res, status, body = null, extraHeaders = {}) {
 }
 
 function errorResponse(res, error) {
-  const status = { VALIDATION: 422, CONFLICT: 409, NOT_FOUND: 404, FORBIDDEN: 403, UNAUTHENTICATED: 401 }[error?.code] || 500;
+  const status = { VALIDATION: 422, CONFLICT: 409, NOT_FOUND: 404, FORBIDDEN: 403, UNAUTHENTICATED: 401, BILLING_CONFIG: 503, BILLING_PROVIDER: 502, BILLING_SIGNATURE: 400 }[error?.code] || 500;
   send(res, status, { error: status === 500 ? "Unexpected server error" : error.message });
 }
 
@@ -57,6 +59,21 @@ async function jsonBody(req) {
   }
 }
 
+async function rawBody(req) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > MAX_BODY_BYTES) {
+      const error = new Error("Request body is too large");
+      error.code = "VALIDATION";
+      throw error;
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
 function bearer(req) {
   const value = req.headers.authorization;
   return typeof value === "string" && value.startsWith("Bearer ") ? value.slice(7) : "";
@@ -65,6 +82,11 @@ function bearer(req) {
 function routeMatch(pathname, expression) {
   const match = pathname.match(expression);
   return match ? decodeURIComponent(match[1]) : null;
+}
+
+function defaultStore() {
+  const options = { billingRequired: process.env.BILLING_REQUIRED === "true" };
+  return process.env.RELAY_DATA_PATH ? createFileBackedRelayStore({ ...options, filePath: process.env.RELAY_DATA_PATH }) : createHostedRelayStore(options);
 }
 
 async function staticResponse(res, pathname) {
@@ -89,7 +111,15 @@ async function staticResponse(res, pathname) {
  * Transport boundary for the reference console. Session and tenant decisions
  * are delegated to the store so every protected operation remains tenant-scoped.
  */
-export function createHostedConsole({ store = createHostedRelayStore() } = {}) {
+export function createHostedConsole({
+  store = defaultStore(),
+  billing = createStripeBilling({
+    secretKey: process.env.STRIPE_SECRET_KEY,
+    priceId: process.env.STRIPE_PRICE_ID,
+    appBaseUrl: process.env.APP_BASE_URL,
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
+  }),
+} = {}) {
   const relay = createRelayService(store);
   const pbxBridge = createPbxBridgeService(store);
 
@@ -109,6 +139,13 @@ export function createHostedConsole({ store = createHostedRelayStore() } = {}) {
     try {
       if (req.method === "GET" && pathname === "/health") return send(res, 200, { ok: true, service: "wgw-relay-hosted-console" });
       if (req.method === "GET" && pathname === "/api/status") return send(res, 200, store.status());
+
+      if (req.method === "POST" && pathname === "/webhooks/stripe") {
+        const event = billing.verifyWebhook({ rawBody: await rawBody(req), signature: req.headers["stripe-signature"] });
+        const entitlement = billing.entitlementFromEvent(event);
+        if (entitlement) store.applyStripeBillingEvent(entitlement);
+        return send(res, 200, { received: true });
+      }
 
       if (pathname.startsWith("/gateway/")) {
         const token = bearer(req);
@@ -152,7 +189,19 @@ export function createHostedConsole({ store = createHostedRelayStore() } = {}) {
           store.signOut(authenticated.sessionToken);
           return send(res, 204);
         }
-        if (req.method === "GET" && pathname === "/api/state") return send(res, 200, store.snapshot({ actor: authenticated.actor }));
+        if (req.method === "GET" && pathname === "/api/state") {
+          const snapshot = store.snapshot({ actor: authenticated.actor });
+          snapshot.tenant.billing = { ...snapshot.tenant.billing, checkoutAvailable: billing.checkoutConfigured(), webhookReady: billing.webhookConfigured() };
+          return send(res, 200, snapshot);
+        }
+        if (req.method === "POST" && pathname === "/api/billing/checkout") {
+          if (authenticated.actor.role !== "owner") return send(res, 403, { error: "Only the organization owner can start billing checkout" });
+          const checkout = await billing.createCheckoutSession({ tenantId: authenticated.actor.tenantId, email: authenticated.actor.user.email });
+          const billingState = store.recordBillingCheckout({ actor: authenticated.actor, checkoutSessionId: checkout.checkoutSessionId });
+          return send(res, 201, { ...checkout, billing: billingState });
+        }
+        const billingExempt = req.method === "POST" && pathname === "/api/logout";
+        if (!billingExempt && !store.hasBillingAccess({ actor: authenticated.actor })) return send(res, 402, { error: "An active Relay subscription is required before this organization can use phone-system features." });
         if (req.method === "POST" && pathname === "/api/profile") return send(res, 200, store.updateProfile({ actor: authenticated.actor, ...(await jsonBody(req)) }));
         if (req.method === "POST" && pathname === "/api/phone-setup") return send(res, 200, store.configurePhoneSetup({ actor: authenticated.actor, ...(await jsonBody(req)) }));
         if (req.method === "POST" && pathname === "/api/owner-delivery") return send(res, 200, store.configureOwnerDelivery({ actor: authenticated.actor, ...(await jsonBody(req)) }));
