@@ -15,35 +15,33 @@
       </header>
       <div id="notice" class="notice" role="status" hidden></div>
 
-      <section id="auth" class="auth-grid" hidden>
-        <div class="center-card compact">
-          <p class="eyebrow">WELCOME BACK</p>
-          <h1>Sign in</h1>
-          <form id="login-form" class="stack">
-            <label>Email<input name="email" type="email" autocomplete="email" required></label>
-            <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
-            <button type="submit">Open my inbox</button>
-          </form>
+      <section id="auth" class="center-card auth-card" hidden>
+        <p class="eyebrow">WGW RELAY</p>
+        <h1 id="auth-title">Welcome back</h1>
+        <p id="auth-copy">Sign in to your private business inbox.</p>
+        <div class="auth-switch" role="tablist" aria-label="Account access">
+          <button class="auth-option active" type="button" data-auth-mode="sign-in" role="tab">Sign in</button>
+          <button class="auth-option" type="button" data-auth-mode="create" role="tab">Create account</button>
+          <button class="auth-option" type="button" data-auth-mode="join" role="tab">Join team</button>
         </div>
-        <div class="center-card compact">
-          <p class="eyebrow">NEW ORGANIZATION</p>
-          <h1>Start your Relay</h1>
-          <p>Create your account first. The next screen connects the business number in plain English.</p>
-          <form id="register-form" class="stack">
-            <label>Business name<input name="organizationName" placeholder="White Glove Wireless" maxlength="120" required></label>
-            <label>Your name<input name="name" autocomplete="name" maxlength="120" required></label>
-            <label>Your email<input name="email" type="email" autocomplete="email" required></label>
-            <label>Create a password<input name="password" type="password" minlength="12" autocomplete="new-password" required></label>
-            <button type="submit">Create organization</button>
-          </form>
-          <details class="invite-details"><summary>Joining an existing team?</summary>
-            <form id="invite-form" class="stack">
-              <label>Invite code<input name="inviteCode" autocomplete="one-time-code" required></label>
-              <label>Create a password<input name="password" type="password" minlength="12" autocomplete="new-password" required></label>
-              <button type="submit">Join team</button>
-            </form>
-          </details>
-        </div>
+        <form id="login-form" class="stack auth-form" data-auth-form="sign-in">
+          <label>Email<input name="email" type="email" autocomplete="email" required></label>
+          <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+          <button type="submit">Open my inbox</button>
+        </form>
+        <form id="register-form" class="stack auth-form" data-auth-form="create" hidden>
+          <label>Business name<input name="organizationName" placeholder="White Glove Wireless" maxlength="120" required></label>
+          <label>Your name<input name="name" autocomplete="name" maxlength="120" required></label>
+          <label>Your email<input name="email" type="email" autocomplete="email" required></label>
+          <label>Create a password<input name="password" type="password" minlength="12" autocomplete="new-password" required></label>
+          <p class="form-note">The first account is the organization Owner/admin. You will set up the phone number next.</p>
+          <button type="submit">Create my owner account</button>
+        </form>
+        <form id="invite-form" class="stack auth-form" data-auth-form="join" hidden>
+          <label>Invite code<input name="inviteCode" autocomplete="one-time-code" required></label>
+          <label>Create a password<input name="password" type="password" minlength="12" autocomplete="new-password" required></label>
+          <button type="submit">Join my team</button>
+        </form>
       </section>
 
       <section id="phone-onboarding" class="center-card" hidden>

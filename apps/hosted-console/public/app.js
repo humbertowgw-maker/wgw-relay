@@ -2,6 +2,7 @@ let sessionToken = sessionStorage.getItem("wgw-relay-session") || "";
 let state = null;
 let selectedConversationId = null;
 let activeView = "inbox";
+let authMode = "sign-in";
 
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]);
@@ -22,6 +23,24 @@ async function api(path, options = {}) {
 
 function show(screen) {
   ["auth", "phone-onboarding", "dashboard"].forEach((id) => { $(`#${id}`).hidden = id !== screen; });
+}
+
+function setAuthMode(mode) {
+  const content = {
+    "sign-in": ["Welcome back", "Sign in to your private business inbox."],
+    create: ["Create your Relay", "Start with your owner account. The phone number comes next."],
+    join: ["Join your team", "Use the invite code from your organization owner."],
+  }[mode];
+  if (!content) return;
+  authMode = mode;
+  $("#auth-title").textContent = content[0];
+  $("#auth-copy").textContent = content[1];
+  document.querySelectorAll("[data-auth-form]").forEach((form) => { form.hidden = form.dataset.authForm !== mode; });
+  document.querySelectorAll("[data-auth-mode]").forEach((button) => {
+    const selected = button.dataset.authMode === mode;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-selected", String(selected));
+  });
 }
 
 async function establishSession(result) {
@@ -77,7 +96,11 @@ function profileView() {
 }
 
 function render() {
-  if (!state) return show("auth");
+  if (!state) {
+    show("auth");
+    setAuthMode(authMode);
+    return;
+  }
   if (!state.tenant.phoneSetup?.completedAt) return show("phone-onboarding");
   show("dashboard");
   $("#organization-name").textContent = state.tenant.organizationName;
@@ -111,6 +134,8 @@ $("#phone-setup-form").addEventListener("submit", async (event) => {
 });
 
 document.addEventListener("click", async (event) => {
+  const authOption = event.target.closest("[data-auth-mode]");
+  if (authOption) { setAuthMode(authOption.dataset.authMode); return; }
   const tab = event.target.closest("[data-view]");
   if (tab) { activeView = tab.dataset.view; render(); return; }
   if (event.target.id === "refresh") { try { await refresh(); setNotice("Inbox refreshed."); } catch (error) { setNotice(error.message); } return; }
@@ -132,6 +157,6 @@ document.addEventListener("submit", async (event) => {
 });
 
 (async () => {
-  if (!sessionToken) return show("auth");
-  try { await refresh(); } catch { sessionStorage.removeItem("wgw-relay-session"); sessionToken = ""; state = null; show("auth"); }
+  if (!sessionToken) return render();
+  try { await refresh(); } catch { sessionStorage.removeItem("wgw-relay-session"); sessionToken = ""; state = null; render(); }
 })();
