@@ -46,7 +46,10 @@ rules and Mitel or generic SIP connection plans. Owners can save an explicit
 business call map: business number → primary extension → voicemail or owner
 follow-up, with a bounded ring time. The owner-only Connections tab visually
 maps the desired call path and clearly separates verified Relay-device
-heartbeats from saved routes that still await private activation. The setup flow records a number plan for
+heartbeats from saved routes that still await private activation. A private PBX
+Bridge can now enroll with a credential displayed once, report its health and
+call-map state, and be revoked by the owner; it cannot yet change a live call
+route. The setup flow records a number plan for
 calls, texts, voicemail, call forwarding, and alerts. It does not yet ship a
 native mobile gateway, durable hosted tenant storage, a deployed account
 console, carrier entitlement, live PBX/SIP provisioning, voicemail
@@ -87,3 +90,6 @@ operations, customer data, and the WGW Relay brand outside this repository.
 - Process STOP/opt-out before an AI concierge or employee sends another SMS.
 
 See [SECURITY.md](SECURITY.md) and [docs/PROTOCOL.md](docs/PROTOCOL.md).
+See the staged [implementation plan](docs/IMPLEMENTATION_PLAN.md) and the
+[Private PBX Bridge contract](docs/PBX_BRIDGE.md) for the path from reference
+console to a verified phone platform.

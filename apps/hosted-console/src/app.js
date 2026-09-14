@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { createRelayService } from "../../../packages/server/src/relayService.js";
+import { createPbxBridgeService } from "../../../packages/server/src/pbxBridgeService.js";
 import { createHostedRelayStore } from "./store.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
@@ -90,6 +91,7 @@ async function staticResponse(res, pathname) {
  */
 export function createHostedConsole({ store = createHostedRelayStore() } = {}) {
   const relay = createRelayService(store);
+  const pbxBridge = createPbxBridgeService(store);
 
   function actor(req) {
     const sessionToken = bearer(req);
@@ -130,6 +132,16 @@ export function createHostedConsole({ store = createHostedRelayStore() } = {}) {
         return send(res, 404, { error: "Gateway route was not found" });
       }
 
+      if (pathname.startsWith("/pbx-bridge/")) {
+        const token = bearer(req);
+        if (!token) return send(res, 401, { error: "PBX Bridge authentication failed" });
+        if (req.method === "POST" && pathname === "/pbx-bridge/heartbeat") {
+          const result = await pbxBridge.heartbeat({ token, envelope: await jsonBody(req) });
+          return send(res, result.status, result.body);
+        }
+        return send(res, 404, { error: "PBX Bridge route was not found" });
+      }
+
       if (pathname.startsWith("/api/")) {
         if (req.method === "POST" && pathname === "/api/register") return send(res, 201, store.registerTenant(await jsonBody(req)));
         if (req.method === "POST" && pathname === "/api/login") return send(res, 200, store.signIn(await jsonBody(req)));
@@ -145,6 +157,7 @@ export function createHostedConsole({ store = createHostedRelayStore() } = {}) {
         if (req.method === "POST" && pathname === "/api/phone-setup") return send(res, 200, store.configurePhoneSetup({ actor: authenticated.actor, ...(await jsonBody(req)) }));
         if (req.method === "POST" && pathname === "/api/owner-delivery") return send(res, 200, store.configureOwnerDelivery({ actor: authenticated.actor, ...(await jsonBody(req)) }));
         if (req.method === "POST" && pathname === "/api/pbx-call-map") return send(res, 200, store.configurePbxCallMap({ actor: authenticated.actor, ...(await jsonBody(req)) }));
+        if (req.method === "POST" && pathname === "/api/pbx-bridges") return send(res, 201, store.createPbxBridge({ actor: authenticated.actor, ...(await jsonBody(req)) }));
         if (req.method === "POST" && pathname === "/api/route-profiles") return send(res, 201, store.createRouteProfile({ actor: authenticated.actor, ...(await jsonBody(req)) }));
         if (req.method === "POST" && pathname === "/api/my-route-profile") return send(res, 200, store.updateMyRouteProfile({ actor: authenticated.actor, ...(await jsonBody(req)) }));
         if (req.method === "POST" && pathname === "/api/phone-connections") return send(res, 201, store.createPhoneConnection({ actor: authenticated.actor, ...(await jsonBody(req)) }));
@@ -153,6 +166,8 @@ export function createHostedConsole({ store = createHostedRelayStore() } = {}) {
 
         const routeProfileId = routeMatch(pathname, /^\/api\/route-profiles\/([^/]+)$/);
         if (req.method === "POST" && routeProfileId) return send(res, 200, store.updateRouteProfile({ actor: authenticated.actor, routeProfileId, ...(await jsonBody(req)) }));
+        const pbxBridgeId = routeMatch(pathname, /^\/api\/pbx-bridges\/([^/]+)$/);
+        if (req.method === "DELETE" && pbxBridgeId) return send(res, 200, store.revokePbxBridge({ actor: authenticated.actor, bridgeId: pbxBridgeId }));
         const assignmentId = routeMatch(pathname, /^\/api\/conversations\/([^/]+)\/assignment$/);
         if (req.method === "POST" && assignmentId) return send(res, 200, store.assignConversation({ actor: authenticated.actor, conversationId: assignmentId, ...(await jsonBody(req)) }));
         const optOutId = routeMatch(pathname, /^\/api\/conversations\/([^/]+)\/opt-out$/);

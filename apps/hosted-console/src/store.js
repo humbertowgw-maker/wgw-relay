@@ -166,6 +166,20 @@ function publicPbxCallMap(callMap) {
   };
 }
 
+function publicPbxBridge(bridge) {
+  return {
+    id: bridge.id,
+    label: bridge.label,
+    connectionId: bridge.connectionId,
+    state: bridge.state,
+    callMapState: bridge.callMapState,
+    agentVersion: bridge.agentVersion,
+    createdAt: bridge.createdAt,
+    lastHeartbeatAt: bridge.lastHeartbeatAt,
+    lastAppliedMapAt: bridge.lastAppliedMapAt,
+  };
+}
+
 function routeTopics(value) {
   if (value === undefined || value === null || value === "") return [];
   const values = Array.isArray(value) ? value : String(value).split(",");
@@ -206,7 +220,7 @@ function managesInbox(actor) { return actor.role === "owner" || actor.role === "
 export function createHostedRelayStore({ now = () => new Date().toISOString(), nowMs = () => Date.now(), id = randomUUID, token = () => randomBytes(32).toString("base64url") } = {}) {
   const state = {
     tenants: new Map(), users: new Map(), userByEmail: new Map(), memberships: new Map(), sessions: new Map(), invitations: new Map(),
-    routeProfiles: new Map(), phoneConnections: new Map(), gateways: new Map(), conversations: new Map(), inboundIds: new Map(), outboundJobs: new Map(), auditByTenant: new Map(),
+    routeProfiles: new Map(), phoneConnections: new Map(), pbxBridges: new Map(), gateways: new Map(), conversations: new Map(), inboundIds: new Map(), outboundJobs: new Map(), auditByTenant: new Map(),
   };
 
   function event(tenantId, action, details = {}) {
@@ -535,6 +549,46 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
       return publicPhoneConnection(connection);
     },
 
+    createPbxBridge({ actor, label, connectionId = null }) {
+      const current = actorFor(actor);
+      if (!managesGateway(current)) throw fail("FORBIDDEN", "Only the organization owner can enroll a PBX Bridge");
+      const tenant = tenantFor(current.tenantId);
+      if (!tenant.pbxCallMap) throw fail("VALIDATION", "Save the business call map before enrolling a PBX Bridge");
+      if (connectionId !== null && connectionId !== "") {
+        const connection = state.phoneConnections.get(connectionId);
+        if (!connection || connection.tenantId !== current.tenantId) throw fail("NOT_FOUND", "Phone-system connection was not found");
+      }
+      const enrollmentToken = token();
+      const bridge = {
+        id: `pbx_bridge_${id()}`,
+        tenantId: tenant.id,
+        label: text(label, "PBX Bridge name", 120),
+        connectionId: connectionId || null,
+        tokenHash: digest(enrollmentToken),
+        state: "awaiting_first_heartbeat",
+        callMapState: "not_applied",
+        agentVersion: null,
+        createdAt: now(),
+        lastHeartbeatAt: null,
+        lastAppliedMapAt: null,
+      };
+      state.pbxBridges.set(bridge.id, bridge);
+      event(tenant.id, "pbx_bridge.enrolled", { actorId: current.userId, bridgeId: bridge.id, connectionId: bridge.connectionId });
+      return { bridge: publicPbxBridge(bridge), enrollmentToken };
+    },
+
+    revokePbxBridge({ actor, bridgeId }) {
+      const current = actorFor(actor);
+      if (!managesGateway(current)) throw fail("FORBIDDEN", "Only the organization owner can revoke a PBX Bridge");
+      const bridge = state.pbxBridges.get(bridgeId);
+      if (!bridge || bridge.tenantId !== current.tenantId) throw fail("NOT_FOUND", "PBX Bridge was not found");
+      bridge.tokenHash = null;
+      bridge.state = "revoked";
+      bridge.callMapState = "not_applied";
+      event(current.tenantId, "pbx_bridge.revoked", { actorId: current.userId, bridgeId: bridge.id });
+      return publicPbxBridge(bridge);
+    },
+
     configurePbxCallMap({ actor, label, type, primaryExtension, ringSeconds: requestedRingSeconds, fallback, voicemailExtension }) {
       const current = actorFor(actor);
       if (!managesGateway(current)) throw fail("FORBIDDEN", "Only the organization owner can manage the PBX call map");
@@ -602,6 +656,23 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
       const gateway = state.gateways.get(deviceId);
       if (!gateway || !sameSecret(gateway.tokenHash, gatewayToken)) return null;
       return { id: gateway.id, tenantId: gateway.tenantId, phoneNumber: gateway.phoneNumber, label: gateway.label };
+    },
+
+    authenticatePbxBridge({ token: bridgeToken, bridgeId }) {
+      const bridge = state.pbxBridges.get(bridgeId);
+      if (!bridge || bridge.state === "revoked" || !sameSecret(bridge.tokenHash, bridgeToken)) return null;
+      return { id: bridge.id, tenantId: bridge.tenantId, label: bridge.label };
+    },
+
+    recordPbxBridgeHeartbeat({ bridge, envelope }) {
+      const stored = state.pbxBridges.get(bridge.id);
+      if (!stored || stored.state === "revoked") throw fail("NOT_FOUND", "PBX Bridge was not found");
+      stored.state = envelope.payload.status;
+      stored.callMapState = envelope.payload.callMapState;
+      stored.agentVersion = envelope.payload.agentVersion || null;
+      stored.lastHeartbeatAt = now();
+      if (stored.state === "ready" && stored.callMapState === "applied") stored.lastAppliedMapAt = now();
+      event(bridge.tenantId, "pbx_bridge.heartbeat", { bridgeId: bridge.id, state: stored.state, callMapState: stored.callMapState });
     },
 
     recordHeartbeat({ gateway, envelope }) {
@@ -711,6 +782,7 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
         routeProfiles: managesGateway(current) ? tenantProfiles.map((item) => publicRouteProfile(item, { includeForwardNumber: true })) : myProfile ? [publicRouteProfile(myProfile, { includeForwardNumber: true })] : [],
         myRouteProfile: myProfile ? publicRouteProfile(myProfile, { includeForwardNumber: true }) : null,
         phoneConnections: managesGateway(current) ? [...state.phoneConnections.values()].filter((item) => item.tenantId === current.tenantId).map(publicPhoneConnection) : [],
+        pbxBridges: managesGateway(current) ? [...state.pbxBridges.values()].filter((item) => item.tenantId === current.tenantId).map(publicPbxBridge) : [],
         gateways: managesGateway(current) ? [...state.gateways.values()].filter((item) => item.tenantId === current.tenantId).map(publicGateway) : [],
         conversations,
         audit: managesInbox(current) ? (state.auditByTenant.get(current.tenantId) || []).map((item) => ({ ...item })) : [],

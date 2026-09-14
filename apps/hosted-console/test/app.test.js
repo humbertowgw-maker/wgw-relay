@@ -30,6 +30,8 @@ test("serves the owner connections map with truthful connection states", async (
   assert.equal(app.status, 200);
   const script = await app.text();
   assert.match(script, /function connectionsView\(\)/);
+  assert.match(script, /renderPbxBridgeStatus/);
+  assert.match(script, /Create Bridge enrollment credential/);
   assert.match(script, /Active — a current Relay heartbeat has confirmed it/);
   assert.match(script, /saved plan is never presented as a live connection/);
 });
@@ -91,8 +93,14 @@ test("exposes the owner control center APIs without granting them to employees",
   assert.equal((await request(baseUrl, "/api/owner-delivery", { method: "POST", headers: ownerHeaders, body: { textsToOwner: true, voicemailsToOwner: true, alertMode: "summary" } })).response.status, 200);
   const callMap = await request(baseUrl, "/api/pbx-call-map", { method: "POST", headers: ownerHeaders, body: { label: "Current Mitel", type: "asterisk_mitel", primaryExtension: "101", ringSeconds: 25, fallback: "voicemail", voicemailExtension: "101" } });
   assert.equal(callMap.response.status, 200);
-  assert.equal((await request(baseUrl, "/api/phone-connections", { method: "POST", headers: ownerHeaders, body: { type: "mitel", label: "Main office", pbxHost: "pbx.example.local", extension: "101" } })).response.status, 201);
+  const phoneConnection = await request(baseUrl, "/api/phone-connections", { method: "POST", headers: ownerHeaders, body: { type: "mitel", label: "Main office", pbxHost: "pbx.example.local", extension: "101" } });
+  assert.equal(phoneConnection.response.status, 201);
+  const bridge = await request(baseUrl, "/api/pbx-bridges", { method: "POST", headers: ownerHeaders, body: { label: "Office Bridge", connectionId: phoneConnection.body.id } });
+  assert.equal(bridge.response.status, 201);
+  const bridgeHeaders = { authorization: `Bearer ${bridge.body.enrollmentToken}` };
+  assert.equal((await request(baseUrl, "/pbx-bridge/heartbeat", { method: "POST", headers: bridgeHeaders, body: { version: 1, event: "pbx_bridge.heartbeat", bridgeId: bridge.body.bridge.id, sentAt: "2026-09-13T22:03:00.000Z", payload: { status: "ready", callMapState: "applied", agentVersion: "0.1.0" } } })).response.status, 200);
   assert.equal((await request(baseUrl, "/api/phone-connections", { method: "POST", headers: agentHeaders, body: { type: "mitel", label: "Nope", extension: "101" } })).response.status, 403);
+  assert.equal((await request(baseUrl, "/api/pbx-bridges", { method: "POST", headers: agentHeaders, body: { label: "Nope" } })).response.status, 403);
   assert.equal((await request(baseUrl, "/api/pbx-call-map", { method: "POST", headers: agentHeaders, body: { label: "Nope", type: "asterisk_mitel", primaryExtension: "101", ringSeconds: 25, fallback: "voicemail", voicemailExtension: "101" } })).response.status, 403);
   assert.equal((await request(baseUrl, "/api/my-route-profile", { method: "POST", headers: agentHeaders, body: { callForwardNumber: "+15550002222", routingTopics: "support" } })).response.status, 200);
 
@@ -101,6 +109,10 @@ test("exposes the owner control center APIs without granting them to employees",
   assert.equal(ownerState.body.routeProfiles[0].callForwardNumber, "+15550002222");
   assert.equal(ownerState.body.phoneConnections[0].type, "mitel");
   assert.equal(ownerState.body.tenant.pbxCallMap.primaryExtension, "101");
+  assert.equal(ownerState.body.pbxBridges[0].state, "ready");
+  assert.equal(ownerState.body.pbxBridges[0].callMapState, "applied");
   assert.equal(agentState.body.permissions.manageRouting, false);
   assert.equal(agentState.body.routeProfiles.length, 1);
+  assert.equal((await request(baseUrl, `/api/pbx-bridges/${bridge.body.bridge.id}`, { method: "DELETE", headers: ownerHeaders })).response.status, 200);
+  assert.equal((await request(baseUrl, "/pbx-bridge/heartbeat", { method: "POST", headers: bridgeHeaders, body: { version: 1, event: "pbx_bridge.heartbeat", bridgeId: bridge.body.bridge.id, sentAt: "2026-09-13T22:04:00.000Z", payload: { status: "ready", callMapState: "applied" } } })).response.status, 401);
 });

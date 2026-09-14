@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { GatewayEvents, assertEnvelope, validateEnvelope } from "../src/index.js";
+import { GatewayEvents, PbxBridgeEvents, assertEnvelope, validateEnvelope, validatePbxBridgeEnvelope } from "../src/index.js";
 
 const inbound = {
   version: 1,
@@ -41,4 +41,19 @@ test("validates gateway heartbeat readiness and optional battery percentage", ()
   });
   assert.equal(result.ok, false);
   assert.match(result.errors.join(" "), /batteryPct/);
+});
+
+test("validates a report-only PBX Bridge heartbeat", () => {
+  const valid = validatePbxBridgeEnvelope({
+    version: 1,
+    event: PbxBridgeEvents.HEARTBEAT,
+    bridgeId: "pbx_bridge_a",
+    sentAt: "2026-09-13T21:00:00.000Z",
+    payload: { status: "ready", callMapState: "applied", agentVersion: "0.1.0" },
+  });
+  assert.equal(valid.ok, true);
+
+  const invalid = validatePbxBridgeEnvelope({ ...valid.value, payload: { status: "ready", callMapState: "changed" } });
+  assert.equal(invalid.ok, false);
+  assert.match(invalid.errors.join(" "), /callMapState/);
 });
