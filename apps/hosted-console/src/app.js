@@ -143,9 +143,15 @@ export function createHostedConsole({ store = createHostedRelayStore() } = {}) {
         if (req.method === "GET" && pathname === "/api/state") return send(res, 200, store.snapshot({ actor: authenticated.actor }));
         if (req.method === "POST" && pathname === "/api/profile") return send(res, 200, store.updateProfile({ actor: authenticated.actor, ...(await jsonBody(req)) }));
         if (req.method === "POST" && pathname === "/api/phone-setup") return send(res, 200, store.configurePhoneSetup({ actor: authenticated.actor, ...(await jsonBody(req)) }));
+        if (req.method === "POST" && pathname === "/api/owner-delivery") return send(res, 200, store.configureOwnerDelivery({ actor: authenticated.actor, ...(await jsonBody(req)) }));
+        if (req.method === "POST" && pathname === "/api/route-profiles") return send(res, 201, store.createRouteProfile({ actor: authenticated.actor, ...(await jsonBody(req)) }));
+        if (req.method === "POST" && pathname === "/api/my-route-profile") return send(res, 200, store.updateMyRouteProfile({ actor: authenticated.actor, ...(await jsonBody(req)) }));
+        if (req.method === "POST" && pathname === "/api/phone-connections") return send(res, 201, store.createPhoneConnection({ actor: authenticated.actor, ...(await jsonBody(req)) }));
         if (req.method === "POST" && pathname === "/api/invitations") return send(res, 201, store.createInvitation({ actor: authenticated.actor, ...(await jsonBody(req)) }));
         if (req.method === "POST" && pathname === "/api/gateways") return send(res, 201, store.pairGateway({ actor: authenticated.actor, ...(await jsonBody(req)) }));
 
+        const routeProfileId = routeMatch(pathname, /^\/api\/route-profiles\/([^/]+)$/);
+        if (req.method === "POST" && routeProfileId) return send(res, 200, store.updateRouteProfile({ actor: authenticated.actor, routeProfileId, ...(await jsonBody(req)) }));
         const assignmentId = routeMatch(pathname, /^\/api\/conversations\/([^/]+)\/assignment$/);
         if (req.method === "POST" && assignmentId) return send(res, 200, store.assignConversation({ actor: authenticated.actor, conversationId: assignmentId, ...(await jsonBody(req)) }));
         const optOutId = routeMatch(pathname, /^\/api\/conversations\/([^/]+)\/opt-out$/);

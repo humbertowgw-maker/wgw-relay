@@ -4,6 +4,7 @@ const E164 = /^\+[1-9]\d{7,14}$/;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const EXTENSION = /^[A-Za-z0-9_-]{1,16}$/;
 const INVITABLE_ROLES = new Set(["manager", "agent"]);
+const PHONE_CONNECTION_TYPES = new Set(["mitel", "generic_sip"]);
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -112,6 +113,59 @@ function publicPhoneSetup(setup) {
   };
 }
 
+function publicOwnerDelivery(delivery, membership) {
+  return {
+    textsToOwner: Boolean(delivery?.textsToOwner),
+    voicemailsToOwner: Boolean(delivery?.voicemailsToOwner),
+    alertMode: delivery?.alertMode || "summary",
+    alertPhoneConfigured: Boolean(membership?.alertPhone),
+    connectionState: delivery?.connectionState || "waiting_for_live_connection",
+    updatedAt: delivery?.updatedAt || null,
+  };
+}
+
+function publicRouteProfile(profile, { includeForwardNumber = false } = {}) {
+  return {
+    id: profile.id,
+    name: profile.name,
+    extension: profile.extension,
+    routingTopics: [...profile.routingTopics],
+    forwardingConfigured: Boolean(profile.callForwardNumber),
+    ...(includeForwardNumber ? { callForwardNumber: profile.callForwardNumber } : {}),
+    status: profile.status,
+    userId: profile.userId,
+    createdAt: profile.createdAt,
+  };
+}
+
+function publicPhoneConnection(connection) {
+  return {
+    id: connection.id,
+    type: connection.type,
+    label: connection.label,
+    extension: connection.extension,
+    pbxHost: connection.pbxHost,
+    status: connection.status,
+    createdAt: connection.createdAt,
+  };
+}
+
+function routeTopics(value) {
+  if (value === undefined || value === null || value === "") return [];
+  const values = Array.isArray(value) ? value : String(value).split(",");
+  const normalized = [...new Set(values.map((item) => String(item).trim().toLowerCase()).filter(Boolean))];
+  if (normalized.length > 8) throw fail("VALIDATION", "Choose up to eight routing topics");
+  normalized.forEach((topic) => {
+    if (topic.length > 40) throw fail("VALIDATION", "A routing topic is too long");
+  });
+  return normalized;
+}
+
+function optionalHost(value) {
+  if (value === undefined || value === null || value === "") return null;
+  return text(value, "PBX address", 254);
+}
+
 function managesPeople(actor) { return actor.role === "owner" || actor.role === "manager"; }
 function managesGateway(actor) { return actor.role === "owner"; }
 function managesInbox(actor) { return actor.role === "owner" || actor.role === "manager"; }
@@ -124,7 +178,7 @@ function managesInbox(actor) { return actor.role === "owner" || actor.role === "
 export function createHostedRelayStore({ now = () => new Date().toISOString(), nowMs = () => Date.now(), id = randomUUID, token = () => randomBytes(32).toString("base64url") } = {}) {
   const state = {
     tenants: new Map(), users: new Map(), userByEmail: new Map(), memberships: new Map(), sessions: new Map(), invitations: new Map(),
-    gateways: new Map(), conversations: new Map(), inboundIds: new Map(), outboundJobs: new Map(), auditByTenant: new Map(),
+    routeProfiles: new Map(), phoneConnections: new Map(), gateways: new Map(), conversations: new Map(), inboundIds: new Map(), outboundJobs: new Map(), auditByTenant: new Map(),
   };
 
   function event(tenantId, action, details = {}) {
@@ -178,12 +232,63 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
     return { sessionToken, expiresAt: new Date(session.expiresAtMs).toISOString() };
   }
 
-  function uniqueExtension(tenantId, extension) {
+  function uniqueExtension(tenantId, extension, { ignoreRouteProfileId = null, ignoreUserId = null, ignoreInvitationId = null } = {}) {
     const normalized = text(extension, "Extension", 16);
     if (!EXTENSION.test(normalized)) throw fail("VALIDATION", "Extension may use letters, numbers, hyphens, and underscores only");
-    if ([...state.memberships.values()].some((item) => item.tenantId === tenantId && item.extension === normalized && item.active)) throw fail("CONFLICT", "That extension is already in use");
-    if ([...state.invitations.values()].some((item) => item.tenantId === tenantId && item.extension === normalized && !item.usedAt && item.expiresAtMs > nowMs())) throw fail("CONFLICT", "That extension is reserved by an active invitation");
+    if ([...state.memberships.values()].some((item) => item.tenantId === tenantId && item.extension === normalized && item.active && item.userId !== ignoreUserId)) throw fail("CONFLICT", "That extension is already in use");
+    if ([...state.invitations.values()].some((item) => item.tenantId === tenantId && item.extension === normalized && !item.usedAt && item.expiresAtMs > nowMs() && item.id !== ignoreInvitationId)) throw fail("CONFLICT", "That extension is reserved by an active invitation");
+    if ([...state.routeProfiles.values()].some((item) => item.tenantId === tenantId && item.extension === normalized && item.id !== ignoreRouteProfileId)) throw fail("CONFLICT", "That extension is already assigned to an employee route");
     return normalized;
+  }
+
+  function routeProfileFor(tenantId, routeProfileId) {
+    const profile = state.routeProfiles.get(routeProfileId);
+    if (!profile || profile.tenantId !== tenantId) throw fail("NOT_FOUND", "Employee route was not found");
+    return profile;
+  }
+
+  function createInvitationFor(current, { name, email, role, extension, routeProfileId }) {
+    if (!INVITABLE_ROLES.has(role)) throw fail("VALIDATION", "Invite role must be manager or agent");
+    const normalizedEmail = normalizeEmail(email);
+    if (state.userByEmail.has(normalizedEmail)) throw fail("CONFLICT", "That email already has an account in this reference console");
+    const profile = routeProfileId ? routeProfileFor(current.tenantId, routeProfileId) : null;
+    if (profile?.userId) throw fail("CONFLICT", "That employee route is already linked to a signed-in user");
+    if (profile?.invitationId) {
+      const existing = state.invitations.get(profile.invitationId);
+      if (existing && !existing.usedAt && existing.expiresAtMs > nowMs()) throw fail("CONFLICT", "That employee route already has an active invitation");
+    }
+    const inviteCode = token();
+    const invitation = {
+      id: `invite_${id()}`,
+      tenantId: current.tenantId,
+      name: profile?.name || text(name, "Teammate name", 120),
+      email: normalizedEmail,
+      role,
+      extension: profile ? profile.extension : uniqueExtension(current.tenantId, extension),
+      routeProfileId: profile?.id || null,
+      codeHash: digest(inviteCode),
+      createdAt: now(),
+      expiresAtMs: nowMs() + INVITE_TTL_MS,
+      usedAt: null,
+    };
+    state.invitations.set(invitation.id, invitation);
+    if (profile) {
+      profile.invitationId = invitation.id;
+      profile.status = "invited";
+    }
+    event(current.tenantId, "member.invited", { actorId: current.userId, invitationId: invitation.id, routeProfileId: profile?.id || null, role });
+    return {
+      invitation: {
+        id: invitation.id,
+        name: invitation.name,
+        email: invitation.email,
+        role: invitation.role,
+        extension: invitation.extension,
+        routeProfileId: invitation.routeProfileId,
+        expiresAt: new Date(invitation.expiresAtMs).toISOString(),
+      },
+      inviteCode,
+    };
   }
 
   function conversationFor(actor, conversationId) {
@@ -228,6 +333,13 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
           callForwardNumber: null,
           notificationPhoneConfigured: false,
           connectionState: existingNumber ? "awaiting_gateway_or_pbx_connection" : "needs_setup",
+        },
+        ownerDelivery: {
+          textsToOwner: false,
+          voicemailsToOwner: false,
+          alertMode: "summary",
+          connectionState: "waiting_for_live_connection",
+          updatedAt: null,
         },
         createdAt,
       };
@@ -297,20 +409,107 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
       return { mainNumber: tenant.mainNumber, phoneSetup: publicPhoneSetup(tenant.phoneSetup) };
     },
 
+    configureOwnerDelivery({ actor, textsToOwner, voicemailsToOwner, alertMode = "summary" }) {
+      const current = actorFor(actor);
+      if (!managesGateway(current)) throw fail("FORBIDDEN", "Only the organization owner can set organization-wide alerts");
+      if (!["summary", "full_content"].includes(alertMode)) throw fail("VALIDATION", "Alert mode must be summary or full_content");
+      const wantsPhoneAlerts = Boolean(textsToOwner) || Boolean(voicemailsToOwner);
+      if (wantsPhoneAlerts && !current.membership.alertPhone) throw fail("VALIDATION", "Add your personal alert number in My profile before turning on phone alerts");
+      const tenant = tenantFor(current.tenantId);
+      tenant.ownerDelivery = {
+        textsToOwner: Boolean(textsToOwner),
+        voicemailsToOwner: Boolean(voicemailsToOwner),
+        alertMode,
+        connectionState: "waiting_for_live_connection",
+        updatedAt: now(),
+      };
+      event(current.tenantId, "owner.delivery_configured", { actorId: current.userId, textsToOwner: tenant.ownerDelivery.textsToOwner, voicemailsToOwner: tenant.ownerDelivery.voicemailsToOwner, alertMode });
+      return publicOwnerDelivery(tenant.ownerDelivery, current.membership);
+    },
+
+    createRouteProfile({ actor, name, extension, callForwardNumber, routingTopics, inviteEmail, role = "agent" }) {
+      const current = actorFor(actor);
+      if (!managesGateway(current)) throw fail("FORBIDDEN", "Only the organization owner can create employee routing");
+      if (inviteEmail) {
+        if (!INVITABLE_ROLES.has(role)) throw fail("VALIDATION", "Invite role must be manager or agent");
+        const normalizedEmail = normalizeEmail(inviteEmail);
+        if (state.userByEmail.has(normalizedEmail)) throw fail("CONFLICT", "That email already has an account in this reference console");
+      }
+      const profile = {
+        id: `route_${id()}`,
+        tenantId: current.tenantId,
+        name: text(name, "Employee name", 120),
+        extension: uniqueExtension(current.tenantId, extension),
+        callForwardNumber: requiredPhone(callForwardNumber, "Employee call-forward number"),
+        routingTopics: routeTopics(routingTopics),
+        invitationId: null,
+        userId: null,
+        status: "ready_to_invite",
+        createdAt: now(),
+      };
+      state.routeProfiles.set(profile.id, profile);
+      let invited = null;
+      if (inviteEmail) invited = createInvitationFor(current, { name: profile.name, email: inviteEmail, role, routeProfileId: profile.id });
+      event(current.tenantId, "route_profile.created", { actorId: current.userId, routeProfileId: profile.id, extension: profile.extension, invited: Boolean(invited) });
+      return { profile: publicRouteProfile(profile, { includeForwardNumber: true }), ...(invited || {}) };
+    },
+
+    updateRouteProfile({ actor, routeProfileId, name, extension, callForwardNumber, routingTopics }) {
+      const current = actorFor(actor);
+      if (!managesGateway(current)) throw fail("FORBIDDEN", "Only the organization owner can change employee routing");
+      const profile = routeProfileFor(current.tenantId, routeProfileId);
+      if (name !== undefined) profile.name = text(name, "Employee name", 120);
+      if (extension !== undefined) {
+        profile.extension = uniqueExtension(current.tenantId, extension, { ignoreRouteProfileId: profile.id, ignoreUserId: profile.userId });
+        if (profile.userId) membershipFor(current.tenantId, profile.userId).extension = profile.extension;
+        if (profile.invitationId) {
+          const invitation = state.invitations.get(profile.invitationId);
+          if (invitation && !invitation.usedAt && invitation.expiresAtMs > nowMs()) invitation.extension = profile.extension;
+        }
+      }
+      if (callForwardNumber !== undefined) profile.callForwardNumber = requiredPhone(callForwardNumber, "Employee call-forward number");
+      if (routingTopics !== undefined) profile.routingTopics = routeTopics(routingTopics);
+      event(current.tenantId, "route_profile.updated", { actorId: current.userId, routeProfileId: profile.id });
+      return publicRouteProfile(profile, { includeForwardNumber: true });
+    },
+
+    updateMyRouteProfile({ actor, callForwardNumber, routingTopics }) {
+      const current = actorFor(actor);
+      const profile = [...state.routeProfiles.values()].find((item) => item.tenantId === current.tenantId && item.userId === current.userId);
+      if (!profile) throw fail("NOT_FOUND", "Your employee route is not configured yet");
+      if (callForwardNumber !== undefined) profile.callForwardNumber = requiredPhone(callForwardNumber, "Your call-forward number");
+      if (routingTopics !== undefined) profile.routingTopics = routeTopics(routingTopics);
+      event(current.tenantId, "route_profile.self_updated", { actorId: current.userId, routeProfileId: profile.id });
+      return publicRouteProfile(profile, { includeForwardNumber: true });
+    },
+
+    createPhoneConnection({ actor, type, label, pbxHost, extension }) {
+      const current = actorFor(actor);
+      if (!managesGateway(current)) throw fail("FORBIDDEN", "Only the organization owner can plan a phone-system connection");
+      const tenant = tenantFor(current.tenantId);
+      if (!tenant.mainNumber || !tenant.phoneSetup?.completedAt) throw fail("VALIDATION", "Complete the business-number setup before adding a phone-system connection");
+      if (!PHONE_CONNECTION_TYPES.has(type)) throw fail("VALIDATION", "Choose Mitel or generic SIP");
+      const normalizedExtension = text(extension, "Phone-system extension", 16);
+      if (!EXTENSION.test(normalizedExtension)) throw fail("VALIDATION", "Phone-system extension may use letters, numbers, hyphens, and underscores only");
+      const connection = {
+        id: `phone_connection_${id()}`,
+        tenantId: current.tenantId,
+        type,
+        label: text(label, "Connection name", 120),
+        pbxHost: optionalHost(pbxHost),
+        extension: normalizedExtension,
+        status: "planned_needs_secure_credentials",
+        createdAt: now(),
+      };
+      state.phoneConnections.set(connection.id, connection);
+      event(current.tenantId, "phone_connection.planned", { actorId: current.userId, connectionId: connection.id, type, extension: connection.extension });
+      return publicPhoneConnection(connection);
+    },
+
     createInvitation({ actor, name, email, role, extension }) {
       const current = actorFor(actor);
       if (!managesPeople(current)) throw fail("FORBIDDEN", "Only an owner or manager can invite teammates");
-      if (!INVITABLE_ROLES.has(role)) throw fail("VALIDATION", "Invite role must be manager or agent");
-      const normalizedEmail = normalizeEmail(email);
-      if (state.userByEmail.has(normalizedEmail)) throw fail("CONFLICT", "That email already has an account in this reference console");
-      const inviteCode = token();
-      const invitation = {
-        id: `invite_${id()}`, tenantId: current.tenantId, name: text(name, "Teammate name", 120), email: normalizedEmail, role,
-        extension: uniqueExtension(current.tenantId, extension), codeHash: digest(inviteCode), createdAt: now(), expiresAtMs: nowMs() + INVITE_TTL_MS, usedAt: null,
-      };
-      state.invitations.set(invitation.id, invitation);
-      event(current.tenantId, "member.invited", { actorId: current.userId, invitationId: invitation.id, role });
-      return { invitation: { id: invitation.id, name: invitation.name, email: invitation.email, role: invitation.role, extension: invitation.extension, expiresAt: new Date(invitation.expiresAtMs).toISOString() }, inviteCode };
+      return createInvitationFor(current, { name, email, role, extension });
     },
 
     acceptInvitation({ inviteCode, password: passwordInput, personalPhone, alertEnabled = false }) {
@@ -326,6 +525,11 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
       state.users.set(user.id, user);
       state.userByEmail.set(user.email, user.id);
       state.memberships.set(membershipKey(membership.tenantId, user.id), membership);
+      if (invitation.routeProfileId) {
+        const profile = routeProfileFor(invitation.tenantId, invitation.routeProfileId);
+        profile.userId = user.id;
+        profile.status = "active";
+      }
       event(membership.tenantId, "invitation.accepted", { userId: user.id, invitationId: invitation.id });
       return { ...issueSession(membership.tenantId, user.id), tenant: { ...tenantFor(membership.tenantId) }, viewer: publicMember(user, membership) };
     },
@@ -437,10 +641,23 @@ export function createHostedRelayStore({ now = () => new Date().toISOString(), n
       const tenant = tenantFor(current.tenantId);
       const members = [...state.memberships.values()].filter((item) => item.tenantId === current.tenantId && item.active).map((item) => publicMember(userFor(item.userId), item)).sort((a, b) => a.extension.localeCompare(b.extension));
       const conversations = [...state.conversations.values()].filter((item) => item.tenantId === current.tenantId && canAccessConversation(current, item)).map(publicConversation).sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
+      const tenantProfiles = [...state.routeProfiles.values()].filter((item) => item.tenantId === current.tenantId).sort((a, b) => a.extension.localeCompare(b.extension));
+      const myProfile = tenantProfiles.find((item) => item.userId === current.userId) || null;
       return {
-        tenant: { id: tenant.id, organizationName: tenant.organizationName, mainNumber: tenant.mainNumber, createdAt: tenant.createdAt, phoneSetup: publicPhoneSetup(tenant.phoneSetup) }, viewer: publicMember(current.user, current.membership),
-        permissions: { managePeople: managesPeople(current), manageGateway: managesGateway(current), manageInbox: managesInbox(current) },
+        tenant: {
+          id: tenant.id,
+          organizationName: tenant.organizationName,
+          mainNumber: tenant.mainNumber,
+          createdAt: tenant.createdAt,
+          phoneSetup: publicPhoneSetup(tenant.phoneSetup),
+          ownerDelivery: managesGateway(current) ? publicOwnerDelivery(tenant.ownerDelivery, current.membership) : null,
+        },
+        viewer: publicMember(current.user, current.membership),
+        permissions: { managePeople: managesPeople(current), manageGateway: managesGateway(current), manageInbox: managesInbox(current), manageRouting: managesGateway(current) },
         members: managesPeople(current) ? members : [publicMember(current.user, current.membership)],
+        routeProfiles: managesGateway(current) ? tenantProfiles.map((item) => publicRouteProfile(item, { includeForwardNumber: true })) : myProfile ? [publicRouteProfile(myProfile, { includeForwardNumber: true })] : [],
+        myRouteProfile: myProfile ? publicRouteProfile(myProfile, { includeForwardNumber: true }) : null,
+        phoneConnections: managesGateway(current) ? [...state.phoneConnections.values()].filter((item) => item.tenantId === current.tenantId).map(publicPhoneConnection) : [],
         gateways: managesGateway(current) ? [...state.gateways.values()].filter((item) => item.tenantId === current.tenantId).map(publicGateway) : [],
         conversations,
         audit: managesInbox(current) ? (state.auditByTenant.get(current.tenantId) || []).map((item) => ({ ...item })) : [],

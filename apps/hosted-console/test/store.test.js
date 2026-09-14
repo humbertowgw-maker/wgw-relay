@@ -88,3 +88,58 @@ test("turns a plain-language number plan into tenant-scoped call, text, and voic
   assert.equal(configured.phoneSetup.callForwardNumber, "+15551234567");
   assert.equal(configured.phoneSetup.connectionState, "awaiting_gateway_or_pbx_connection");
 });
+
+test("lets an owner reserve an employee extension, link it on invitation acceptance, and control routing", () => {
+  const store = fixture();
+  const owner = register(store, "Owner", "owner@example.com", "+15557654321");
+  const ownerActor = store.authenticateUser(owner.sessionToken);
+  store.updateProfile({ actor: ownerActor, personalPhone: "+15551234567", alertEnabled: true });
+
+  const created = store.createRouteProfile({
+    actor: ownerActor,
+    name: "Alex",
+    extension: "101",
+    callForwardNumber: "+15550001111",
+    routingTopics: "billing, phone plans",
+    inviteEmail: "alex@example.com",
+    role: "agent",
+  });
+  assert.equal(created.profile.extension, "101");
+  assert.equal(created.profile.status, "invited");
+  assert.equal(created.profile.callForwardNumber, "+15550001111");
+  assert.throws(() => store.createInvitation({ actor: ownerActor, name: "Duplicate", email: "duplicate@example.com", role: "agent", extension: "101" }), /reserved by an active invitation|already assigned/);
+
+  const agent = store.acceptInvitation({ inviteCode: created.inviteCode, password: "alex-long-password" });
+  const agentActor = store.authenticateUser(agent.sessionToken);
+  const afterInvite = store.snapshot({ actor: ownerActor });
+  assert.equal(afterInvite.routeProfiles[0].status, "active");
+  assert.equal(afterInvite.routeProfiles[0].userId, agent.viewer.id);
+  assert.equal(agent.viewer.extension, "101");
+
+  store.updateRouteProfile({ actor: ownerActor, routeProfileId: created.profile.id, extension: "102" });
+  assert.equal(store.snapshot({ actor: agentActor }).viewer.extension, "102");
+
+  store.updateMyRouteProfile({ actor: agentActor, callForwardNumber: "+15550002222", routingTopics: ["support"] });
+  assert.equal(store.snapshot({ actor: agentActor }).myRouteProfile.callForwardNumber, "+15550002222");
+  assert.throws(() => store.updateRouteProfile({ actor: agentActor, routeProfileId: created.profile.id, extension: "102" }), /Only the organization owner/);
+
+  const delivery = store.configureOwnerDelivery({ actor: ownerActor, textsToOwner: true, voicemailsToOwner: true, alertMode: "full_content" });
+  assert.equal(delivery.textsToOwner, true);
+  assert.equal(delivery.alertMode, "full_content");
+  const connection = store.createPhoneConnection({ actor: ownerActor, type: "mitel", label: "Main office Mitel", pbxHost: "pbx.example.local", extension: "101" });
+  assert.equal(connection.status, "planned_needs_secure_credentials");
+  assert.equal(store.snapshot({ actor: ownerActor }).phoneConnections[0].type, "mitel");
+});
+
+test("keeps employee routes and PBX plans tenant-scoped", () => {
+  const store = fixture();
+  const alpha = register(store, "Alpha", "alpha@example.com", "+15557654321");
+  const beta = register(store, "Beta", "beta@example.com", "+15559876543");
+  const alphaActor = store.authenticateUser(alpha.sessionToken);
+  const betaActor = store.authenticateUser(beta.sessionToken);
+  const profile = store.createRouteProfile({ actor: alphaActor, name: "Alex", extension: "101", callForwardNumber: "+15550001111" });
+
+  assert.throws(() => store.updateRouteProfile({ actor: betaActor, routeProfileId: profile.profile.id, extension: "102" }), /not found/);
+  assert.equal(store.snapshot({ actor: betaActor }).routeProfiles.length, 0);
+  assert.equal(store.snapshot({ actor: betaActor }).phoneConnections.length, 0);
+});

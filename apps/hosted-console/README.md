@@ -11,6 +11,10 @@ infrastructure around the same protocol.
 - a plain-language number plan: business purpose, calls, texts, voicemail,
   call-forward destination, and owner alerts;
 - owner, manager, and agent roles with tenant-isolated inbox visibility;
+- owner-managed employee routes: extension reservation, employee call-forward
+  number, future AI/PBX routing topics, and a linked account invitation;
+- owner-wide text and voicemail alert preferences plus planned Mitel or generic
+  SIP connection records (without browser-stored PBX credentials);
 - expiring, one-use teammate invitations and individual alert preferences;
 - one-time phone-gateway pairing credentials (the stored value is hashed);
 - assignment, opt-out locking, queued replies, delivery state, and audit events;
@@ -28,4 +32,7 @@ nor is it ready to store customer data in production. Durable tenant storage,
 email verification and recovery, MFA, rate limiting, native gateway apps,
 notifications, and concierge controls are the next implementation layers.
 Saving a number plan does not activate carrier calls or voicemail by itself;
-that requires a paired Relay phone or PBX connection.
+that requires a paired Relay phone or PBX connection. Saving an employee route,
+owner alert rule, or phone-system plan also does not activate call forwarding,
+SMS forwarding, voicemail capture, PBX registration, or AI handoff until that
+connection is securely configured and verified.

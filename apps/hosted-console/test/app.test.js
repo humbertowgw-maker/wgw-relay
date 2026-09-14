@@ -59,3 +59,30 @@ test("runs a signed-in tenant user flow with invitation permissions and paired-d
   assert.equal(result.response.status, 200);
   assert.equal(ownerState.body.permissions.manageInbox, true);
 });
+
+test("exposes the owner control center APIs without granting them to employees", async (t) => {
+  const { server, baseUrl } = await runningServer();
+  t.after(() => server.close());
+
+  const owner = await request(baseUrl, "/api/register", { method: "POST", body: { organizationName: "WGW", name: "Owner", email: "owner@example.com", password: "owner-long-password" } });
+  const ownerHeaders = { authorization: `Bearer ${owner.body.sessionToken}` };
+  await request(baseUrl, "/api/phone-setup", { method: "POST", headers: ownerHeaders, body: { businessNumber: "+15557654321", businessPurpose: "Sales", callsEnabled: true, textsEnabled: true, voicemailEnabled: true, callForwardNumber: "+15551234567", notificationPhone: "+15551234567" } });
+
+  const employee = await request(baseUrl, "/api/route-profiles", { method: "POST", headers: ownerHeaders, body: { name: "Alex", extension: "101", callForwardNumber: "+15550001111", routingTopics: "billing, phone plans", inviteEmail: "alex@example.com", role: "agent" } });
+  assert.equal(employee.response.status, 201);
+  assert.equal(employee.body.profile.status, "invited");
+  const agent = await request(baseUrl, "/api/invitations/accept", { method: "POST", body: { inviteCode: employee.body.inviteCode, password: "alex-long-password" } });
+  const agentHeaders = { authorization: `Bearer ${agent.body.sessionToken}` };
+
+  assert.equal((await request(baseUrl, "/api/owner-delivery", { method: "POST", headers: ownerHeaders, body: { textsToOwner: true, voicemailsToOwner: true, alertMode: "summary" } })).response.status, 200);
+  assert.equal((await request(baseUrl, "/api/phone-connections", { method: "POST", headers: ownerHeaders, body: { type: "mitel", label: "Main office", pbxHost: "pbx.example.local", extension: "101" } })).response.status, 201);
+  assert.equal((await request(baseUrl, "/api/phone-connections", { method: "POST", headers: agentHeaders, body: { type: "mitel", label: "Nope", extension: "101" } })).response.status, 403);
+  assert.equal((await request(baseUrl, "/api/my-route-profile", { method: "POST", headers: agentHeaders, body: { callForwardNumber: "+15550002222", routingTopics: "support" } })).response.status, 200);
+
+  const ownerState = await request(baseUrl, "/api/state", { headers: ownerHeaders });
+  const agentState = await request(baseUrl, "/api/state", { headers: agentHeaders });
+  assert.equal(ownerState.body.routeProfiles[0].callForwardNumber, "+15550002222");
+  assert.equal(ownerState.body.phoneConnections[0].type, "mitel");
+  assert.equal(agentState.body.permissions.manageRouting, false);
+  assert.equal(agentState.body.routeProfiles.length, 1);
+});
